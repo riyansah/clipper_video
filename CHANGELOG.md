@@ -4,6 +4,12 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.6.1] - 2026-06-21
+
+### Added
+- Manual cut dikembalikan ke frontend dengan input `start_time`, `duration`, dan `output_format`.
+- Hasil manual cut ditampilkan di daftar clip yang sama untuk preview dan download.
+
 ## [0.6.0] - 2026-06-21
 
 ### Added

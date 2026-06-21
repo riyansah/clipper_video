@@ -256,6 +256,12 @@ a:active {
   margin-top: 18px;
 }
 
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
 .control-form {
   display: flex;
   flex-direction: column;
@@ -307,7 +313,22 @@ a:active {
   color: var(--ink);
 }
 
-.edit-panel.locked .control-form {
+.control-form.secondary {
+  background: rgba(255, 255, 255, 0.26);
+  color: var(--ink);
+}
+
+.control-form.secondary button {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.control-form.secondary button:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.edit-panel.locked .tool-grid {
   opacity: 0.28;
   pointer-events: none;
 }
@@ -740,12 +761,12 @@ button:disabled {
   }
 
 
-
-.dropzone {
+  .dropzone {
     min-height: 230px;
   }
 
   .editor-grid,
+  .tool-grid,
   .clip-grid {
     grid-template-columns: 1fr;
   }

@@ -17,6 +17,7 @@ type UploadResult = {
 type Clip = {
   clip_id: string;
   video_id: string;
+  start_time?: string;
   start_time_seconds: number;
   duration: number;
   output_format: OutputFormat;
@@ -59,12 +60,17 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 export default function Home() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedVideo, setUploadedVideo] = useState<UploadResult | null>(null);
+  const [startTime, setStartTime] = useState("00:00:00");
+  const [duration, setDuration] = useState(60);
+  const [manualOutputFormat, setManualOutputFormat] = useState<OutputFormat>("original");
   const [maxClips, setMaxClips] = useState(5);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("vertical_9_16");
   const [clips, setClips] = useState<Clip[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [cutting, setCutting] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
+  const busy = uploading || cutting || processing;
 
   function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
@@ -110,6 +116,36 @@ export default function Home() {
       setError(message.includes("Backend") ? message : `Upload gagal: ${message}`);
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function manualCut(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!uploadedVideo) {
+      setError("Upload video terlebih dahulu sebelum menjalankan manual cut.");
+      return;
+    }
+
+    setCutting(true);
+    setError("");
+
+    try {
+      const clip = await apiRequest<Clip>(`/videos/${uploadedVideo.video_id}/cut`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          start_time: startTime,
+          duration,
+          output_format: manualOutputFormat,
+        }),
+      });
+      setClips((currentClips) => [clip, ...currentClips]);
+    } catch (cutError) {
+      const message = cutError instanceof Error ? cutError.message : "Manual cut gagal.";
+      setError(message.includes("Backend") ? message : `Manual cut gagal: ${message}`);
+    } finally {
+      setCutting(false);
     }
   }
 
@@ -159,11 +195,11 @@ export default function Home() {
       <section className="intro-block">
         <p className="eyebrow">VIDEO CLIPPER</p>
         <h1>
-          Upload MP4.
+          Cut manual.
           <br />
           Auto split <em>clip.</em>
         </h1>
-        <p>Frontend sederhana untuk upload video, membuat clip otomatis, preview, dan download.</p>
+        <p>Upload MP4, buat clip manual, auto split, preview, dan download hasilnya.</p>
       </section>
 
       <section className="workspace" aria-label="Video clipper workspace">
@@ -189,7 +225,7 @@ export default function Home() {
           <button
             className="primary-button full-button"
             type="button"
-            disabled={uploading || processing}
+            disabled={busy}
             onClick={uploadVideo}
           >
             {uploading ? "Uploading..." : "Upload"}
@@ -207,42 +243,94 @@ export default function Home() {
           <div className="panel-heading">
             <span className="step">02</span>
             <div>
-              <p className="kicker">AUTO SPLIT</p>
+              <p className="kicker">CUT</p>
               <h2>Buat clips</h2>
             </div>
           </div>
 
-          {!uploadedVideo && <p className="locked-copy">Upload sukses akan mengaktifkan Auto Split.</p>}
+          {!uploadedVideo && <p className="locked-copy">Upload sukses akan mengaktifkan alat clip.</p>}
 
-          <form className="control-form" onSubmit={autoSplit} aria-hidden={!uploadedVideo}>
-            <label>
-              Max clips
-              <input
-                type="number"
-                min="1"
-                max="20"
-                value={maxClips}
-                disabled={!uploadedVideo || uploading || processing}
-                onChange={(event) => setMaxClips(Number(event.target.value))}
-              />
-            </label>
+          <div className="tool-grid" aria-hidden={!uploadedVideo}>
+            <form className="control-form secondary" onSubmit={manualCut}>
+              <div className="tool-title">
+                <span>MANUAL CUT</span>
+                <small>Presisi waktu</small>
+              </div>
 
-            <label>
-              Output format
-              <select
-                value={outputFormat}
-                disabled={!uploadedVideo || uploading || processing}
-                onChange={(event) => setOutputFormat(event.target.value as OutputFormat)}
-              >
-                <option value="original">original</option>
-                <option value="vertical_9_16">vertical_9_16</option>
-              </select>
-            </label>
+              <label>
+                Start time
+                <input
+                  type="text"
+                  pattern="[0-9]{2}:[0-9]{2}:[0-9]{2}"
+                  value={startTime}
+                  disabled={!uploadedVideo || busy}
+                  onChange={(event) => setStartTime(event.target.value)}
+                />
+              </label>
 
-            <button type="submit" disabled={!uploadedVideo || uploading || processing}>
-              {processing ? "Processing..." : "Auto Split"}
-            </button>
-          </form>
+              <label>
+                Duration
+                <input
+                  type="number"
+                  min="1"
+                  value={duration}
+                  disabled={!uploadedVideo || busy}
+                  onChange={(event) => setDuration(Number(event.target.value))}
+                />
+              </label>
+
+              <label>
+                Output format
+                <select
+                  value={manualOutputFormat}
+                  disabled={!uploadedVideo || busy}
+                  onChange={(event) => setManualOutputFormat(event.target.value as OutputFormat)}
+                >
+                  <option value="original">original</option>
+                  <option value="vertical_9_16">vertical_9_16</option>
+                </select>
+              </label>
+
+              <button type="submit" disabled={!uploadedVideo || busy}>
+                {cutting ? "Cutting..." : "Manual Cut"}
+              </button>
+            </form>
+
+            <form className="control-form" onSubmit={autoSplit}>
+              <div className="tool-title">
+                <span>AUTO SPLIT</span>
+                <small>Default 60 detik</small>
+              </div>
+
+              <label>
+                Max clips
+                <input
+                  type="number"
+                  min="1"
+                  max="20"
+                  value={maxClips}
+                  disabled={!uploadedVideo || busy}
+                  onChange={(event) => setMaxClips(Number(event.target.value))}
+                />
+              </label>
+
+              <label>
+                Output format
+                <select
+                  value={outputFormat}
+                  disabled={!uploadedVideo || busy}
+                  onChange={(event) => setOutputFormat(event.target.value as OutputFormat)}
+                >
+                  <option value="original">original</option>
+                  <option value="vertical_9_16">vertical_9_16</option>
+                </select>
+              </label>
+
+              <button type="submit" disabled={!uploadedVideo || busy}>
+                {processing ? "Processing..." : "Auto Split"}
+              </button>
+            </form>
+          </div>
         </article>
       </section>
 
@@ -258,7 +346,7 @@ export default function Home() {
         </div>
 
         {clips.length === 0 ? (
-          <div className="empty-state">Hasil auto split akan muncul di sini.</div>
+          <div className="empty-state">Hasil manual cut atau auto split akan muncul di sini.</div>
         ) : (
           <div className="clip-grid">
             {clips.map((clip, index) => (
