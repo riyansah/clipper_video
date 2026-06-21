@@ -4,6 +4,11 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.7.1] - 2026-06-21
+
+### Changed
+- Menetapkan aturan proyek bahwa setiap perubahan harus memperbarui `CHANGELOG.md`, `README.md`, dan `VERSION` dalam change set yang sama.
+
 ## [0.7.0] - 2026-06-21
 
 ### Added

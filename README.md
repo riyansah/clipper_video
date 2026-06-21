@@ -324,13 +324,13 @@ npm run build
 
 Versi aplikasi saat ini dicatat di `VERSION`.
 
-Setiap perubahan fitur, bug fix, atau perubahan perilaku harus menambahkan entry baru di `CHANGELOG.md` sebelum commit. Gunakan format versi semantik sederhana:
+Setiap perubahan kode, perilaku aplikasi, atau proses proyek harus memperbarui `CHANGELOG.md`, `README.md`, dan `VERSION` dalam change set yang sama sebelum commit. Gunakan format versi semantik sederhana:
 
 - `MAJOR` untuk perubahan besar yang tidak kompatibel
 - `MINOR` untuk fitur baru
 - `PATCH` untuk bug fix kecil
 
-Rilis Tahap 7 ini dicatat sebagai `0.7.0`.
+Rilis Tahap 7 ini dimulai dari `0.7.0`; pembaruan aturan dokumentasi ini dicatat sebagai `0.7.1`.
 
 ## Catatan batasan
 

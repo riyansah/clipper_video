@@ -11,6 +11,7 @@ Complete the task with the smallest safe change. Follow the existing codebase st
 * Check project scripts and docs before guessing commands.
 * Preserve existing behavior unless a change is requested.
 * Avoid unnecessary refactors, abstractions, comments, or dependencies.
+* For every code, behavior, or project-process change, update `CHANGELOG.md`, `README.md`, and `VERSION` in the same change set.
 * Do not overwrite uncommitted user changes.
 * Do not commit, push, deploy, migrate, or modify production unless asked.
 
