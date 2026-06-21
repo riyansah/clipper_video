@@ -14,7 +14,7 @@ Aplikasi web lokal untuk upload MP4, manual cut, auto split, output `original` a
 
 - Upload video `.mp4`
 - Manual cut berdasarkan `start_time`, `duration`, dan `output_format`
-- Auto split video dengan job status processing
+- Auto split video dengan pilihan durasi per clip dan job status processing
 - Output `original` dan `vertical_9_16`
 - Preview dan download clip dari frontend
 - Halaman riwayat `/history` untuk melihat video tersimpan dan clip per video
@@ -80,6 +80,8 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 
 `GET /videos/{video_id}/clips` mengembalikan `clip_id`, `video_id`, `job_id`, `start_time_seconds`, `duration`, `output_format`, `width`, `height`, `filename`, `file_path`, `download_url`, dan `created_at`.
 
+Auto split menerima `clip_duration_seconds`, `max_clips`, dan `output_format`; jika durasi tidak dikirim, backend memakai default 60 detik.
+
 ## Test halaman history dari browser
 
 1. Jalankan backend dan frontend.
@@ -118,7 +120,7 @@ Gunakan versi semantik sederhana:
 - `MINOR` untuk fitur baru
 - `PATCH` untuk bug fix kecil atau dokumentasi
 
-Rilis Tahap 9 dicatat sebagai `0.9.0`.
+Rilis pilihan durasi auto split dicatat sebagai `0.10.0`.
 
 ## Batasan
 

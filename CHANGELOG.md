@@ -4,6 +4,11 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.10.0] - 2026-06-21
+
+### Added
+- Frontend auto split sekarang menyediakan input durasi per clip dan mengirim `clip_duration_seconds` ke backend.
+
 ## [0.9.0] - 2026-06-21
 
 ### Added

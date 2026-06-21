@@ -80,6 +80,7 @@ export default function Home() {
   const [duration, setDuration] = useState(60);
   const [manualOutputFormat, setManualOutputFormat] = useState<OutputFormat>("original");
   const [maxClips, setMaxClips] = useState(5);
+  const [clipDurationSeconds, setClipDurationSeconds] = useState(60);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("vertical_9_16");
   const [clips, setClips] = useState<Clip[]>([]);
   const [autoSplitJob, setAutoSplitJob] = useState<AutoSplitJobStatus | null>(null);
@@ -190,6 +191,7 @@ export default function Home() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            clip_duration_seconds: clipDurationSeconds,
             max_clips: maxClips,
             output_format: outputFormat,
           }),
@@ -391,8 +393,19 @@ export default function Home() {
             <form className="control-form" onSubmit={autoSplit}>
               <div className="tool-title">
                 <span>AUTO SPLIT</span>
-                <small>Default 60 detik</small>
+                <small>Durasi bisa dipilih</small>
               </div>
+
+              <label>
+                Clip duration (seconds)
+                <input
+                  type="number"
+                  min="1"
+                  value={clipDurationSeconds}
+                  disabled={!uploadedVideo || busy}
+                  onChange={(event) => setClipDurationSeconds(Number(event.target.value))}
+                />
+              </label>
 
               <label>
                 Max clips
