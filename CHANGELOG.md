@@ -4,6 +4,15 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.9.0] - 2026-06-21
+
+### Added
+- Halaman frontend `/history` untuk melihat daftar video tersimpan dan clip per video.
+- Link navigasi dari halaman utama ke history dan dari history kembali ke halaman utama.
+- Dokumentasi endpoint dan langkah test browser untuk halaman history.
+- README diringkas menjadi panduan setup, endpoint utama, testing, dan versioning.
+- Versi proyek dan metadata frontend diselaraskan ke `0.9.0`.
+
 ## [0.7.1] - 2026-06-21
 
 ### Changed

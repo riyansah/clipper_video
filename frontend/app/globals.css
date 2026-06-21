@@ -899,3 +899,129 @@ button:disabled {
     transition: none !important;
   }
 }
+
+.top-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
+}
+
+.top-actions a {
+  border: 1px solid var(--ink);
+  padding: 8px 11px;
+  background: rgba(239, 238, 229, 0.76);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.top-actions a:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.history-intro {
+  padding-bottom: clamp(38px, 5vw, 64px);
+}
+
+.history-layout {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(300px, 0.8fr) minmax(0, 1.2fr);
+  gap: 1px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  box-shadow: 12px 12px 0 var(--ink);
+}
+
+.history-panel {
+  min-width: 0;
+  background: rgba(239, 238, 229, 0.94);
+  padding: clamp(18px, 2.6vw, 34px);
+}
+
+.video-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 1px;
+  background: var(--ink);
+  border: 1px solid var(--ink);
+}
+
+.video-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  background: var(--paper);
+  padding: 14px;
+}
+
+.video-row.selected {
+  background: rgba(47, 143, 70, 0.12);
+}
+
+.video-row > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.video-row strong,
+.video-row code,
+.video-row span {
+  overflow-wrap: anywhere;
+}
+
+.video-row code,
+.video-row span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.video-row button {
+  min-height: 38px;
+  padding: 9px 12px;
+}
+
+.history-clip-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 1050px) {
+  .history-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .topbar,
+  .top-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .topbar,
+  .top-actions {
+    gap: 10px;
+  }
+
+  .top-actions .api-url {
+    max-width: 100%;
+  }
+
+  .video-row {
+    grid-template-columns: 1fr;
+  }
+
+  .history-layout {
+    box-shadow: 6px 6px 0 var(--ink);
+  }
+
+  .history-clip-grid {
+    grid-template-columns: 1fr;
+  }
+}

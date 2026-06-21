@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { ChangeEvent, FormEvent } from "react";
 import { useState } from "react";
 
@@ -256,7 +257,10 @@ export default function Home() {
           <span className="brand-mark" aria-hidden="true" />
           <span>CLIPPER / LOCAL</span>
         </div>
-        <span className="api-url">{API_URL}</span>
+        <div className="top-actions">
+          <Link href="/history">History</Link>
+          <span className="api-url">{API_URL}</span>
+        </div>
       </header>
 
       <section className="intro-block">
