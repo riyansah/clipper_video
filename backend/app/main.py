@@ -181,6 +181,31 @@ def storage_path_from_database(file_path: str) -> Path:
     return BACKEND_DIR / path
 
 
+def validated_storage_path(file_path: str, storage_dir: Path) -> Path:
+    path = Path(file_path)
+    root = storage_dir.resolve()
+    if path.is_absolute():
+        candidate = path
+    elif path.parts and path.parts[0] == storage_dir.name:
+        candidate = storage_dir.joinpath(*path.parts[1:])
+    else:
+        candidate = storage_dir / path
+
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError("File path is outside the allowed storage directory")
+    return resolved
+
+
+def delete_storage_file(file_path: str, storage_dir: Path) -> bool:
+    path = validated_storage_path(file_path, storage_dir)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^https?://[^/]+:3000$",
@@ -281,6 +306,75 @@ def list_video_clips(
         select(Clip).where(Clip.video_id == video_id).order_by(Clip.created_at.desc())
     ).all()
     return [clip_to_dict(clip) for clip in clips]
+
+
+@app.delete("/videos/{video_id}", tags=["videos"])
+def delete_video(
+    video_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, object]:
+    try:
+        video = session.scalar(select(Video).where(Video.video_id == video_id))
+        if video is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Video not found",
+            )
+        clips = session.scalars(select(Clip).where(Clip.video_id == video_id)).all()
+        jobs = session.scalars(select(Job).where(Job.video_id == video_id)).all()
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read video metadata",
+        ) from exc
+
+    deleted_files = 0
+    missing_files: list[str] = []
+    try:
+        for clip in clips:
+            if delete_storage_file(clip.file_path, OUTPUT_DIR):
+                deleted_files += 1
+            else:
+                missing_files.append(clip.filename)
+        if delete_storage_file(video.file_path, UPLOAD_DIR):
+            deleted_files += 1
+        else:
+            missing_files.append(video.stored_filename)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete video files",
+        ) from exc
+
+    try:
+        for clip in clips:
+            session.delete(clip)
+        for job in jobs:
+            session.delete(job)
+        session.delete(video)
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete video metadata",
+        ) from exc
+
+    return {
+        "status": "success",
+        "video_id": video_id,
+        "deleted_clips": len(clips),
+        "deleted_jobs": len(jobs),
+        "deleted_files": deleted_files,
+        "files_not_found": len(missing_files),
+        "missing_files": missing_files,
+    }
 
 
 class CutVideoRequest(BaseModel):
@@ -829,6 +923,55 @@ def get_clip(
             detail="Clip not found",
         )
     return clip_to_dict(clip)
+
+
+@app.delete("/clips/{clip_id}", tags=["clips"])
+def delete_clip(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, str | bool]:
+    try:
+        clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read clip metadata",
+        ) from exc
+
+    if clip is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clip not found",
+        )
+
+    try:
+        file_deleted = delete_storage_file(clip.file_path, OUTPUT_DIR)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete clip file",
+        ) from exc
+
+    try:
+        session.delete(clip)
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete clip metadata",
+        ) from exc
+
+    return {
+        "status": "success",
+        "clip_id": clip_id,
+        "file_deleted": file_deleted,
+        "file_not_found": not file_deleted,
+    }
 
 
 @app.post("/clips/{clip_id}/vertical", tags=["clips"])

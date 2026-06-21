@@ -4,6 +4,15 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.11.0] - 2026-06-21
+
+### Added
+- Endpoint `DELETE /clips/{clip_id}` untuk menghapus file clip dan metadata.
+- Endpoint `DELETE /videos/{video_id}` untuk menghapus video, semua clip, job, dan file terkait.
+- Validasi path storage, pelaporan file yang tidak ditemukan, serta error handling file dan database.
+- Tombol delete clip dan video di `/history` dengan konfirmasi, loading state, dan pesan error.
+- Tes backend untuk delete, missing file, 404, permission error, dan path di luar storage.
+
 ## [0.10.0] - 2026-06-21
 
 ### Added

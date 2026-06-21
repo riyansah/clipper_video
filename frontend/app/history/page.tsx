@@ -30,11 +30,11 @@ type Clip = {
   created_at: string;
 };
 
-async function apiRequest<T>(path: string): Promise<T> {
+async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
 
   try {
-    response = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+    response = await fetch(`${API_URL}${path}`, { ...init, cache: "no-store" });
   } catch {
     throw new Error(`Backend tidak bisa dihubungi di ${API_URL}`);
   }
@@ -68,6 +68,8 @@ export default function HistoryPage() {
   const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(null);
   const [loadingVideos, setLoadingVideos] = useState(true);
   const [loadingClips, setLoadingClips] = useState(false);
+  const [deletingVideoId, setDeletingVideoId] = useState<string | null>(null);
+  const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -109,6 +111,49 @@ export default function HistoryPage() {
       setError(message.includes("Backend") ? message : `Gagal mengambil clips: ${message}`);
     } finally {
       setLoadingClips(false);
+    }
+  }
+
+  async function deleteClip(clip: Clip) {
+    if (!window.confirm(`Hapus clip ${clip.clip_id}?`)) return;
+
+    setDeletingClipId(clip.clip_id);
+    setError("");
+    try {
+      await apiRequest(`/clips/${clip.clip_id}`, { method: "DELETE" });
+      setClips((currentClips) =>
+        currentClips.filter((item) => item.clip_id !== clip.clip_id),
+      );
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : "Gagal menghapus clip.";
+      setError(message.includes("Backend") ? message : `Gagal menghapus clip: ${message}`);
+    } finally {
+      setDeletingClipId(null);
+    }
+  }
+
+  async function deleteVideo(video: VideoItem) {
+    const confirmed = window.confirm(
+      `Hapus video ${video.original_filename}? Semua clip dari video ini juga akan dihapus.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingVideoId(video.video_id);
+    setError("");
+    try {
+      await apiRequest(`/videos/${video.video_id}`, { method: "DELETE" });
+      setVideos((currentVideos) =>
+        currentVideos.filter((item) => item.video_id !== video.video_id),
+      );
+      if (selectedVideo?.video_id === video.video_id) {
+        setSelectedVideo(null);
+        setClips([]);
+      }
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : "Gagal menghapus video.";
+      setError(message.includes("Backend") ? message : `Gagal menghapus video: ${message}`);
+    } finally {
+      setDeletingVideoId(null);
     }
   }
 
@@ -164,9 +209,23 @@ export default function HistoryPage() {
                     <code>{video.video_id}</code>
                     <span>{formatDate(video.created_at)}</span>
                   </div>
-                  <button type="button" disabled={loadingClips} onClick={() => loadClips(video)}>
-                    Lihat Clips
-                  </button>
+                  <div className="video-row-actions">
+                    <button
+                      type="button"
+                      disabled={loadingClips || deletingVideoId !== null}
+                      onClick={() => loadClips(video)}
+                    >
+                      Lihat Clips
+                    </button>
+                    <button
+                      className="danger-button"
+                      type="button"
+                      disabled={deletingVideoId !== null}
+                      onClick={() => deleteVideo(video)}
+                    >
+                      {deletingVideoId === video.video_id ? "Deleting..." : "Delete video"}
+                    </button>
+                  </div>
                 </article>
               ))}
             </div>
@@ -210,6 +269,14 @@ export default function HistoryPage() {
                     <a href={`${API_URL}${clip.download_url}`} download>
                       Download
                     </a>
+                    <button
+                      className="danger-button"
+                      type="button"
+                      disabled={deletingClipId !== null}
+                      onClick={() => deleteClip(clip)}
+                    >
+                      {deletingClipId === clip.clip_id ? "Deleting..." : "Delete"}
+                    </button>
                   </div>
                 </article>
               ))}

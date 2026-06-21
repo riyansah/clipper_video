@@ -982,9 +982,27 @@ button:disabled {
   font-size: 12px;
 }
 
+.video-row > .video-row-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .video-row button {
   min-height: 38px;
   padding: 9px 12px;
+}
+
+.danger-button {
+  border-color: var(--signal-dark);
+  color: var(--signal-dark);
+}
+
+.danger-button:hover:not(:disabled) {
+  border-color: var(--signal-dark);
+  background: var(--signal-dark);
+  color: white;
 }
 
 .history-clip-grid {
@@ -1015,6 +1033,14 @@ button:disabled {
 
   .video-row {
     grid-template-columns: 1fr;
+  }
+
+  .video-row > .video-row-actions {
+    justify-content: stretch;
+  }
+
+  .video-row-actions button {
+    flex: 1;
   }
 
   .history-layout {
