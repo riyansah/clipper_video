@@ -333,6 +333,62 @@ a:active {
   pointer-events: none;
 }
 
+.job-status {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 16px;
+  padding: 13px;
+  border: 1px solid var(--ink);
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.job-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.job-status-row strong {
+  color: var(--signal-dark);
+}
+
+.progress-track {
+  overflow: hidden;
+  height: 10px;
+  border: 1px solid var(--ink);
+  background: rgba(24, 25, 21, 0.08);
+}
+
+.progress-track span {
+  display: block;
+  height: 100%;
+  background: var(--signal);
+  transition: width 180ms ease;
+}
+
+.job-status.completed .progress-track span {
+  background: var(--green);
+}
+
+.job-status.failed {
+  border-color: var(--signal-dark);
+  background: #ffe1d9;
+}
+
+.job-status code,
+.job-status p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .dropzone {
   position: relative;
   display: grid;

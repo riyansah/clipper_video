@@ -3,14 +3,14 @@ import math
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import DateTime, Float, Integer, String, create_engine, select
+from sqlalchemy import DateTime, Float, Integer, String, create_engine, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -24,7 +24,9 @@ UPLOAD_CHUNK_SIZE = 1024 * 1024
 VERTICAL_WIDTH = 1080
 VERTICAL_HEIGHT = 1920
 OutputFormat = Literal["original", "vertical_9_16"]
+JobStatus = Literal["pending", "processing", "completed", "failed"]
 VALID_OUTPUT_FORMATS = {"original", "vertical_9_16"}
+VALID_JOB_STATUSES = {"pending", "processing", "completed", "failed"}
 VERTICAL_9_16_FILTER = (
     "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
     "crop=1080:1920,gblur=sigma=30[bg];"
@@ -57,6 +59,7 @@ class Clip(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     clip_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     video_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    job_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     start_time_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     duration: Mapped[float] = mapped_column(Float, nullable=False)
     output_format: Mapped[str] = mapped_column(String, nullable=False)
@@ -68,12 +71,35 @@ class Clip(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    job_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    video_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_database() -> None:
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        clip_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(clips)"))
+        }
+        if "job_id" not in clip_columns:
+            connection.execute(text("ALTER TABLE clips ADD COLUMN job_id VARCHAR"))
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_clips_job_id ON clips (job_id)")
+            )
 
 
 def get_db_session() -> Session:
@@ -97,11 +123,12 @@ def video_to_dict(video: Video) -> dict[str, int | str]:
     }
 
 
-def clip_to_dict(clip: Clip) -> dict[str, int | float | str]:
+def clip_to_dict(clip: Clip) -> dict[str, int | float | str | None]:
     return {
         "id": clip.id,
         "clip_id": clip.clip_id,
         "video_id": clip.video_id,
+        "job_id": clip.job_id,
         "start_time_seconds": normalize_number(clip.start_time_seconds),
         "duration": normalize_number(clip.duration),
         "output_format": clip.output_format,
@@ -121,6 +148,9 @@ def save_clip_metadata(
         Clip(
             clip_id=str(clip_payload["clip_id"]),
             video_id=str(clip_payload["video_id"]),
+            job_id=(
+                str(clip_payload["job_id"]) if clip_payload.get("job_id") is not None else None
+            ),
             start_time_seconds=float(clip_payload["start_time_seconds"]),
             duration=float(clip_payload["duration"]),
             output_format=str(clip_payload["output_format"]),
@@ -131,6 +161,17 @@ def save_clip_metadata(
             download_url=str(clip_payload["download_url"]),
         )
     )
+
+
+def job_to_dict(job: Job, clips: list[Clip] | None = None) -> dict[str, object]:
+    return {
+        "job_id": job.job_id,
+        "video_id": job.video_id,
+        "status": job.status,
+        "progress": job.progress,
+        "error_message": job.error_message,
+        "clips": [clip_to_dict(clip) for clip in clips] if clips else [],
+    }
 
 
 def storage_path_from_database(file_path: str) -> Path:
@@ -235,7 +276,7 @@ def get_video(
 @app.get("/videos/{video_id}/clips", tags=["videos"])
 def list_video_clips(
     video_id: str, session: Session = Depends(get_db_session)
-) -> list[dict[str, int | float | str]]:
+) -> list[dict[str, int | float | str | None]]:
     clips = session.scalars(
         select(Clip).where(Clip.video_id == video_id).order_by(Clip.created_at.desc())
     ).all()
@@ -500,6 +541,224 @@ class AutoSplitRequest(BaseModel):
         return value
 
 
+def update_job_state(
+    session: Session,
+    job: Job,
+    status_value: JobStatus | None = None,
+    progress: int | None = None,
+    error_message: str | None = None,
+    completed: bool = False,
+) -> None:
+    if status_value is not None:
+        job.status = status_value
+    if progress is not None:
+        job.progress = max(0, min(progress, 100))
+    job.error_message = error_message
+    job.updated_at = utc_now()
+    if completed:
+        job.completed_at = utc_now()
+    session.commit()
+
+
+def auto_split_error_message(exc: Exception) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "FFmpeg executable was not found"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "FFmpeg failed to split video"
+    if isinstance(exc, SQLAlchemyError):
+        return "Failed to save clip metadata"
+    return str(exc)
+
+
+def build_auto_split_clips(
+    video_id: str,
+    clip_duration_seconds: int,
+    max_clips: int,
+    output_format: OutputFormat,
+    session: Session | None = None,
+    job_id: str | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> list[dict[str, str | int | float]]:
+    input_path = UPLOAD_DIR / f"{video_id}.mp4"
+    metadata = read_video_metadata(input_path)
+    video_duration = float(metadata["duration"])
+    width, height = output_dimensions(
+        output_format,
+        int(metadata["width"]),
+        int(metadata["height"]),
+    )
+
+    if video_duration <= 0:
+        raise RuntimeError("Video duration is invalid")
+
+    clip_count = min(max_clips, math.ceil(video_duration / clip_duration_seconds))
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    created_paths: list[Path] = []
+    current_path: Path | None = None
+    clips: list[dict[str, str | int | float]] = []
+
+    try:
+        for index in range(clip_count):
+            start_seconds = index * clip_duration_seconds
+            duration = min(clip_duration_seconds, video_duration - start_seconds)
+            clip_id = str(uuid4())
+            filename = f"{clip_id}.mp4"
+            output_path = OUTPUT_DIR / filename
+            current_path = output_path
+            created_paths.append(output_path)
+            command = build_clip_command(
+                input_path,
+                output_path,
+                start_seconds,
+                duration,
+                output_format,
+            )
+
+            subprocess.run(command, capture_output=True, text=True, check=True)
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                raise RuntimeError("FFmpeg did not create an output file")
+
+            clip_payload: dict[str, str | int | float] = {
+                "clip_id": clip_id,
+                "video_id": video_id,
+                "start_time_seconds": start_seconds,
+                "duration": duration,
+                "output_format": output_format,
+                "width": width,
+                "height": height,
+                "filename": filename,
+                "file_path": str(Path("outputs") / filename),
+                "download_url": f"/clips/{clip_id}/download",
+            }
+            if job_id is not None:
+                clip_payload["job_id"] = job_id
+
+            clips.append(clip_payload)
+            if session is not None:
+                save_clip_metadata(session, clip_payload)
+                session.commit()
+            if progress_callback is not None:
+                progress_callback(index + 1, clip_count)
+            current_path = None
+    except SQLAlchemyError:
+        if session is not None:
+            session.rollback()
+        if current_path is not None:
+            current_path.unlink(missing_ok=True)
+        raise
+    except (FileNotFoundError, subprocess.CalledProcessError, RuntimeError):
+        if session is None:
+            for path in created_paths:
+                path.unlink(missing_ok=True)
+        elif current_path is not None:
+            current_path.unlink(missing_ok=True)
+        raise
+
+    return clips
+
+
+def process_auto_split_job(
+    job_id: str,
+    video_id: str,
+    clip_duration_seconds: int,
+    max_clips: int,
+    output_format: OutputFormat,
+) -> None:
+    init_database()
+    with SessionLocal() as session:
+        job = session.scalar(select(Job).where(Job.job_id == job_id))
+        if job is None:
+            return
+
+        try:
+            update_job_state(session, job, status_value="processing", progress=0)
+
+            def update_progress(done: int, total: int) -> None:
+                update_job_state(session, job, progress=round((done / total) * 100))
+
+            build_auto_split_clips(
+                video_id,
+                clip_duration_seconds,
+                max_clips,
+                output_format,
+                session=session,
+                job_id=job_id,
+                progress_callback=update_progress,
+            )
+            update_job_state(session, job, status_value="completed", progress=100, completed=True)
+        except Exception as exc:
+            session.rollback()
+            job = session.scalar(select(Job).where(Job.job_id == job_id))
+            if job is None:
+                return
+            update_job_state(
+                session,
+                job,
+                status_value="failed",
+                error_message=auto_split_error_message(exc),
+                completed=True,
+            )
+
+
+@app.post("/videos/{video_id}/auto-split-jobs", tags=["videos"])
+def create_auto_split_job(
+    video_id: str,
+    request: AutoSplitRequest,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_db_session),
+) -> dict[str, str]:
+    input_path = UPLOAD_DIR / f"{video_id}.mp4"
+    if not input_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found",
+        )
+
+    job_id = str(uuid4())
+    job = Job(job_id=job_id, video_id=video_id, status="pending", progress=0)
+    try:
+        session.add(job)
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save job metadata",
+        ) from exc
+
+    background_tasks.add_task(
+        process_auto_split_job,
+        job_id,
+        video_id,
+        request.clip_duration_seconds,
+        request.max_clips,
+        request.output_format,
+    )
+    return {
+        "job_id": job_id,
+        "video_id": video_id,
+        "status": "pending",
+        "status_url": f"/jobs/{job_id}",
+    }
+
+
+@app.get("/jobs/{job_id}", tags=["jobs"])
+def get_job(job_id: str, session: Session = Depends(get_db_session)) -> dict[str, object]:
+    job = session.scalar(select(Job).where(Job.job_id == job_id))
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found",
+        )
+
+    clips: list[Clip] = []
+    if job.status == "completed":
+        clips = session.scalars(
+            select(Clip).where(Clip.job_id == job_id).order_by(Clip.created_at.asc())
+        ).all()
+    return job_to_dict(job, clips)
+
+
 @app.post("/videos/{video_id}/auto-split", tags=["videos"])
 def auto_split_video(
     video_id: str,
@@ -514,97 +773,29 @@ def auto_split_video(
         )
 
     try:
-        metadata = read_video_metadata(input_path)
-        video_duration = float(metadata["duration"])
-        width, height = output_dimensions(
+        clips = build_auto_split_clips(
+            video_id,
+            request.clip_duration_seconds,
+            request.max_clips,
             request.output_format,
-            int(metadata["width"]),
-            int(metadata["height"]),
         )
     except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="FFmpeg executable was not found",
-        ) from exc
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        ) from exc
-
-    if video_duration <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Video duration is invalid",
-        )
-
-    clip_count = min(
-        request.max_clips,
-        math.ceil(video_duration / request.clip_duration_seconds),
-    )
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    created_paths: list[Path] = []
-    clips: list[dict[str, str | int | float]] = []
-
-    try:
-        for index in range(clip_count):
-            start_seconds = index * request.clip_duration_seconds
-            duration = min(
-                request.clip_duration_seconds,
-                video_duration - start_seconds,
-            )
-            clip_id = str(uuid4())
-            filename = f"{clip_id}.mp4"
-            output_path = OUTPUT_DIR / filename
-            created_paths.append(output_path)
-            command = build_clip_command(
-                input_path,
-                output_path,
-                start_seconds,
-                duration,
-                request.output_format,
-            )
-
-            subprocess.run(command, capture_output=True, text=True, check=True)
-            if not output_path.is_file() or output_path.stat().st_size == 0:
-                raise RuntimeError("FFmpeg did not create an output file")
-
-            clips.append(
-                {
-                    "clip_id": clip_id,
-                    "video_id": video_id,
-                    "start_time_seconds": start_seconds,
-                    "duration": duration,
-                    "output_format": request.output_format,
-                    "width": width,
-                    "height": height,
-                    "filename": filename,
-                    "file_path": str(Path("outputs") / filename),
-                    "download_url": f"/clips/{clip_id}/download",
-                }
-            )
-    except FileNotFoundError as exc:
-        for path in created_paths:
-            path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="FFmpeg executable was not found",
         ) from exc
     except subprocess.CalledProcessError as exc:
-        for path in created_paths:
-            path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="FFmpeg failed to split video",
         ) from exc
     except RuntimeError as exc:
-        for path in created_paths:
-            path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(exc),
         ) from exc
 
+    created_paths = [OUTPUT_DIR / str(clip_payload["filename"]) for clip_payload in clips]
     try:
         for clip_payload in clips:
             save_clip_metadata(session, clip_payload)
@@ -630,7 +821,7 @@ def auto_split_video(
 @app.get("/clips/{clip_id}", tags=["clips"])
 def get_clip(
     clip_id: str, session: Session = Depends(get_db_session)
-) -> dict[str, int | float | str]:
+) -> dict[str, int | float | str | None]:
     clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
     if clip is None:
         raise HTTPException(

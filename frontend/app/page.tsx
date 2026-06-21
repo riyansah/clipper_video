@@ -26,13 +26,27 @@ type Clip = {
   download_url: string;
 };
 
-type AutoSplitResult = {
+type JobStatus = "pending" | "processing" | "completed" | "failed";
+
+type AutoSplitJobCreateResult = {
+  job_id: string;
   video_id: string;
-  clip_duration_seconds: number;
-  max_clips: number;
-  output_format: OutputFormat;
+  status: "pending";
+  status_url: string;
+};
+
+type AutoSplitJobStatus = {
+  job_id: string;
+  video_id: string;
+  status: JobStatus;
+  progress: number;
+  error_message: string | null;
   clips: Clip[];
 };
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
@@ -67,6 +81,7 @@ export default function Home() {
   const [maxClips, setMaxClips] = useState(5);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("vertical_9_16");
   const [clips, setClips] = useState<Clip[]>([]);
+  const [autoSplitJob, setAutoSplitJob] = useState<AutoSplitJobStatus | null>(null);
   const [uploading, setUploading] = useState(false);
   const [cutting, setCutting] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -78,6 +93,7 @@ export default function Home() {
     const file = event.target.files?.[0] ?? null;
     setError("");
     setClips([]);
+    setAutoSplitJob(null);
     setUploadedVideo(null);
 
     if (!file) {
@@ -106,6 +122,7 @@ export default function Home() {
     setUploading(true);
     setError("");
     setClips([]);
+    setAutoSplitJob(null);
 
     try {
       const result = await apiRequest<UploadResult>("/videos/upload", {
@@ -162,10 +179,12 @@ export default function Home() {
 
     setProcessing(true);
     setError("");
+    setClips([]);
+    setAutoSplitJob(null);
 
     try {
-      const result = await apiRequest<AutoSplitResult>(
-        `/videos/${uploadedVideo.video_id}/auto-split`,
+      const createdJob = await apiRequest<AutoSplitJobCreateResult>(
+        `/videos/${uploadedVideo.video_id}/auto-split-jobs`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -175,7 +194,30 @@ export default function Home() {
           }),
         },
       );
-      setClips(result.clips);
+      setAutoSplitJob({
+        job_id: createdJob.job_id,
+        video_id: createdJob.video_id,
+        status: createdJob.status,
+        progress: 0,
+        error_message: null,
+        clips: [],
+      });
+
+      while (true) {
+        await wait(2000);
+        const job = await apiRequest<AutoSplitJobStatus>(createdJob.status_url);
+        setAutoSplitJob(job);
+
+        if (job.status === "completed") {
+          setClips(job.clips);
+          break;
+        }
+
+        if (job.status === "failed") {
+          setError(job.error_message ? `Auto split gagal: ${job.error_message}` : "Auto split gagal.");
+          break;
+        }
+      }
     } catch (splitError) {
       const message = splitError instanceof Error ? splitError.message : "Auto split gagal.";
       setError(message.includes("Backend") ? message : `Auto split gagal: ${message}`);
@@ -377,6 +419,22 @@ export default function Home() {
               </button>
             </form>
           </div>
+
+          {autoSplitJob && (
+            <div className={`job-status ${autoSplitJob.status}`}>
+              <div className="job-status-row">
+                <span>{autoSplitJob.status}</span>
+                <strong>{autoSplitJob.progress}%</strong>
+              </div>
+              <div className="progress-track" aria-hidden="true">
+                <span style={{ width: `${autoSplitJob.progress}%` }} />
+              </div>
+              <code>{autoSplitJob.job_id}</code>
+              {autoSplitJob.status === "failed" && autoSplitJob.error_message && (
+                <p>{autoSplitJob.error_message}</p>
+              )}
+            </div>
+          )}
         </article>
       </section>
 
