@@ -477,6 +477,41 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.clip-lookup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.clip-lookup label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.clip-lookup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.clip-lookup input {
+  min-width: 0;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.3);
+  color: var(--ink);
+  padding: 12px;
+}
+
+.clip-lookup button {
+  min-height: 42px;
+  padding: 0 14px;
+}
+
 .edit-panel {
   position: relative;
 }
@@ -767,7 +802,8 @@ button:disabled {
 
   .editor-grid,
   .tool-grid,
-  .clip-grid {
+  .clip-grid,
+  .clip-lookup-row {
     grid-template-columns: 1fr;
   }
 

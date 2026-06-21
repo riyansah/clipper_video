@@ -60,6 +60,7 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 export default function Home() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedVideo, setUploadedVideo] = useState<UploadResult | null>(null);
+  const [clipLookupVideoId, setClipLookupVideoId] = useState("");
   const [startTime, setStartTime] = useState("00:00:00");
   const [duration, setDuration] = useState(60);
   const [manualOutputFormat, setManualOutputFormat] = useState<OutputFormat>("original");
@@ -69,8 +70,9 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [cutting, setCutting] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [loadingStoredClips, setLoadingStoredClips] = useState(false);
   const [error, setError] = useState("");
-  const busy = uploading || cutting || processing;
+  const busy = uploading || cutting || processing || loadingStoredClips;
 
   function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
@@ -111,6 +113,7 @@ export default function Home() {
         body: formData,
       });
       setUploadedVideo(result);
+      setClipLookupVideoId(result.video_id);
     } catch (uploadError) {
       const message = uploadError instanceof Error ? uploadError.message : "Upload gagal.";
       setError(message.includes("Backend") ? message : `Upload gagal: ${message}`);
@@ -181,6 +184,28 @@ export default function Home() {
     }
   }
 
+  async function loadStoredClips() {
+    const videoId = clipLookupVideoId.trim() || uploadedVideo?.video_id;
+    if (!videoId) {
+      setError("Isi video_id terlebih dahulu.");
+      return;
+    }
+
+    setLoadingStoredClips(true);
+    setError("");
+
+    try {
+      const storedClips = await apiRequest<Clip[]>(`/videos/${videoId}/clips`);
+      setClips(storedClips);
+    } catch (storedClipError) {
+      const message =
+        storedClipError instanceof Error ? storedClipError.message : "Gagal mengambil clips.";
+      setError(message.includes("Backend") ? message : `Gagal mengambil clips: ${message}`);
+    } finally {
+      setLoadingStoredClips(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <div className="grid" aria-hidden="true" />
@@ -237,6 +262,27 @@ export default function Home() {
               <code>{uploadedVideo.video_id}</code>
             </div>
           )}
+
+          <div className="clip-lookup">
+            <label htmlFor="clip-lookup-video-id">Ambil clips by video_id</label>
+            <div className="clip-lookup-row">
+              <input
+                id="clip-lookup-video-id"
+                type="text"
+                value={clipLookupVideoId}
+                disabled={busy}
+                placeholder="VIDEO_ID"
+                onChange={(event) => setClipLookupVideoId(event.target.value)}
+              />
+              <button
+                type="button"
+                disabled={busy || (!clipLookupVideoId.trim() && !uploadedVideo)}
+                onClick={loadStoredClips}
+              >
+                {loadingStoredClips ? "Loading..." : "Load Clips"}
+              </button>
+            </div>
+          </div>
         </article>
 
         <article className={`panel edit-panel ${uploadedVideo ? "" : "locked"}`}>

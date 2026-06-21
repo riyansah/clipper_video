@@ -4,6 +4,13 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.7.0] - 2026-06-21
+
+### Added
+- Metadata video dan clip disimpan ke SQLite `backend/clipper.db` memakai SQLAlchemy.
+- Endpoint untuk daftar/detail video dan clip: `GET /videos`, `GET /videos/{video_id}`, `GET /videos/{video_id}/clips`, dan `GET /clips/{clip_id}`.
+- Frontend bisa mengambil ulang daftar clip dari backend berdasarkan `video_id`.
+
 ## [0.6.1] - 2026-06-21
 
 ### Added

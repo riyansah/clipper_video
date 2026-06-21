@@ -1,18 +1,25 @@
 import json
 import math
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import DateTime, Float, Integer, String, create_engine, select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 app = FastAPI(title="Clipper API", version="0.1.0")
-UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads"
-OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+UPLOAD_DIR = BACKEND_DIR / "uploads"
+OUTPUT_DIR = BACKEND_DIR / "outputs"
+DATABASE_PATH = BACKEND_DIR / "clipper.db"
+DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 VERTICAL_WIDTH = 1080
 VERTICAL_HEIGHT = 1920
@@ -24,6 +31,114 @@ VERTICAL_9_16_FILTER = (
     "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
     "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
 )
+
+class Base(DeclarativeBase):
+    pass
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Video(Base):
+    __tablename__ = "videos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    video_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String, nullable=False)
+    stored_filename: Mapped[str] = mapped_column(String, nullable=False)
+    file_path: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class Clip(Base):
+    __tablename__ = "clips"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    clip_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    video_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    start_time_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    duration: Mapped[float] = mapped_column(Float, nullable=False)
+    output_format: Mapped[str] = mapped_column(String, nullable=False)
+    width: Mapped[int] = mapped_column(Integer, nullable=False)
+    height: Mapped[int] = mapped_column(Integer, nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    file_path: Mapped[str] = mapped_column(String, nullable=False)
+    download_url: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def init_database() -> None:
+    Base.metadata.create_all(bind=engine)
+
+
+def get_db_session() -> Session:
+    init_database()
+    with SessionLocal() as session:
+        yield session
+
+
+def normalize_number(value: float) -> int | float:
+    return int(value) if float(value).is_integer() else value
+
+
+def video_to_dict(video: Video) -> dict[str, int | str]:
+    return {
+        "id": video.id,
+        "video_id": video.video_id,
+        "original_filename": video.original_filename,
+        "stored_filename": video.stored_filename,
+        "file_path": video.file_path,
+        "created_at": video.created_at.isoformat(),
+    }
+
+
+def clip_to_dict(clip: Clip) -> dict[str, int | float | str]:
+    return {
+        "id": clip.id,
+        "clip_id": clip.clip_id,
+        "video_id": clip.video_id,
+        "start_time_seconds": normalize_number(clip.start_time_seconds),
+        "duration": normalize_number(clip.duration),
+        "output_format": clip.output_format,
+        "width": clip.width,
+        "height": clip.height,
+        "filename": clip.filename,
+        "file_path": clip.file_path,
+        "download_url": clip.download_url,
+        "created_at": clip.created_at.isoformat(),
+    }
+
+
+def save_clip_metadata(
+    session: Session, clip_payload: dict[str, str | int | float]
+) -> None:
+    session.add(
+        Clip(
+            clip_id=str(clip_payload["clip_id"]),
+            video_id=str(clip_payload["video_id"]),
+            start_time_seconds=float(clip_payload["start_time_seconds"]),
+            duration=float(clip_payload["duration"]),
+            output_format=str(clip_payload["output_format"]),
+            width=int(clip_payload["width"]),
+            height=int(clip_payload["height"]),
+            filename=str(clip_payload["filename"]),
+            file_path=str(clip_payload["file_path"]),
+            download_url=str(clip_payload["download_url"]),
+        )
+    )
+
+
+def storage_path_from_database(file_path: str) -> Path:
+    path = Path(file_path)
+    if path.is_absolute():
+        return path
+    return BACKEND_DIR / path
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,7 +155,9 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/videos/upload", status_code=status.HTTP_201_CREATED, tags=["videos"])
-async def upload_video(file: UploadFile = File(...)) -> dict[str, str]:
+async def upload_video(
+    file: UploadFile = File(...), session: Session = Depends(get_db_session)
+) -> dict[str, str]:
     original_filename = file.filename or ""
     if Path(original_filename).suffix.lower() != ".mp4":
         raise HTTPException(
@@ -76,12 +193,53 @@ async def upload_video(file: UploadFile = File(...)) -> dict[str, str]:
             detail="Uploaded file is empty",
         )
 
-    return {
+    payload = {
         "video_id": video_id,
         "original_filename": original_filename,
         "stored_filename": stored_filename,
         "file_path": str(Path("uploads") / stored_filename),
     }
+    try:
+        session.add(Video(**payload))
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save video metadata",
+        ) from exc
+
+    return payload
+
+
+@app.get("/videos", tags=["videos"])
+def list_videos(session: Session = Depends(get_db_session)) -> list[dict[str, int | str]]:
+    videos = session.scalars(select(Video).order_by(Video.created_at.desc())).all()
+    return [video_to_dict(video) for video in videos]
+
+
+@app.get("/videos/{video_id}", tags=["videos"])
+def get_video(
+    video_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, int | str]:
+    video = session.scalar(select(Video).where(Video.video_id == video_id))
+    if video is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found",
+        )
+    return video_to_dict(video)
+
+
+@app.get("/videos/{video_id}/clips", tags=["videos"])
+def list_video_clips(
+    video_id: str, session: Session = Depends(get_db_session)
+) -> list[dict[str, int | float | str]]:
+    clips = session.scalars(
+        select(Clip).where(Clip.video_id == video_id).order_by(Clip.created_at.desc())
+    ).all()
+    return [clip_to_dict(clip) for clip in clips]
 
 
 class CutVideoRequest(BaseModel):
@@ -216,7 +374,11 @@ def build_clip_command(
 
 
 @app.post("/videos/{video_id}/cut", tags=["videos"])
-def cut_video(video_id: str, request: CutVideoRequest) -> dict[str, str | int | float]:
+def cut_video(
+    video_id: str,
+    request: CutVideoRequest,
+    session: Session = Depends(get_db_session),
+) -> dict[str, str | int | float]:
     input_path = UPLOAD_DIR / f"{video_id}.mp4"
     if not input_path.is_file():
         raise HTTPException(
@@ -270,7 +432,7 @@ def cut_video(video_id: str, request: CutVideoRequest) -> dict[str, str | int | 
             detail="FFmpeg did not create an output file",
         )
 
-    return {
+    clip_payload = {
         "clip_id": clip_id,
         "video_id": video_id,
         "start_time": request.start_time,
@@ -283,10 +445,34 @@ def cut_video(video_id: str, request: CutVideoRequest) -> dict[str, str | int | 
         "file_path": str(Path("outputs") / filename),
         "download_url": f"/clips/{clip_id}/download",
     }
+    try:
+        save_clip_metadata(session, clip_payload)
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        output_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save clip metadata",
+        ) from exc
+
+    return clip_payload
 
 
 @app.get("/clips/{clip_id}/download", tags=["clips"])
-def download_clip(clip_id: str) -> FileResponse:
+def download_clip(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> FileResponse:
+    clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
+    if clip is not None:
+        database_clip_path = storage_path_from_database(clip.file_path)
+        if database_clip_path.is_file():
+            return FileResponse(
+                path=database_clip_path,
+                media_type="video/mp4",
+                filename=database_clip_path.name,
+            )
+
     clip_path = OUTPUT_DIR / f"{clip_id}.mp4"
     if not clip_path.is_file():
         raise HTTPException(
@@ -316,7 +502,9 @@ class AutoSplitRequest(BaseModel):
 
 @app.post("/videos/{video_id}/auto-split", tags=["videos"])
 def auto_split_video(
-    video_id: str, request: AutoSplitRequest
+    video_id: str,
+    request: AutoSplitRequest,
+    session: Session = Depends(get_db_session),
 ) -> dict[str, str | int | list[dict[str, str | int | float]]]:
     input_path = UPLOAD_DIR / f"{video_id}.mp4"
     if not input_path.is_file():
@@ -417,6 +605,19 @@ def auto_split_video(
             detail=str(exc),
         ) from exc
 
+    try:
+        for clip_payload in clips:
+            save_clip_metadata(session, clip_payload)
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        for path in created_paths:
+            path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save clip metadata",
+        ) from exc
+
     return {
         "video_id": video_id,
         "clip_duration_seconds": request.clip_duration_seconds,
@@ -424,6 +625,19 @@ def auto_split_video(
         "output_format": request.output_format,
         "clips": clips,
     }
+
+
+@app.get("/clips/{clip_id}", tags=["clips"])
+def get_clip(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, int | float | str]:
+    clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
+    if clip is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clip not found",
+        )
+    return clip_to_dict(clip)
 
 
 @app.post("/clips/{clip_id}/vertical", tags=["clips"])

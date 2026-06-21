@@ -2,4 +2,5 @@ fastapi==0.115.12
 httpx==0.28.1
 pytest==8.4.0
 python-multipart==0.0.20
+SQLAlchemy==2.0.41
 uvicorn[standard]==0.34.3

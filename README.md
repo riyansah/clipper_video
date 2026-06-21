@@ -8,6 +8,7 @@ Stack:
 - Frontend: Next.js App Router
 - Video processing: FFmpeg / FFprobe
 - Storage: file lokal di `backend/uploads` dan `backend/outputs`
+- Database: SQLite `backend/clipper.db`
 
 ## Fitur
 
@@ -20,13 +21,14 @@ Stack:
 - Output vertical 9:16 menghasilkan MP4 `1080x1920`
 - Vertical 9:16 memakai blur background; video utama tetap utuh di tengah
 - Preview dan download hasil clip dari frontend
+- Metadata video dan clip tersimpan di SQLite
 - API download clip tetap di `/clips/{clip_id}/download`
 
 ## Struktur proyek
 
 ```text
 clipper/
-├── backend/          # FastAPI app, requirements, dan test
+├── backend/          # FastAPI app, SQLite database runtime, requirements, dan test
 ├── frontend/         # Next.js frontend
 ├── uploads/          # Placeholder folder upload
 ├── outputs/          # Placeholder folder output
@@ -38,6 +40,7 @@ File upload dan output runtime disimpan di:
 
 - `backend/uploads/`
 - `backend/outputs/`
+- `backend/clipper.db`
 
 Folder runtime tersebut tidak ditujukan untuk masuk Git.
 
@@ -227,6 +230,58 @@ Contoh response:
 curl -OJ http://localhost:8000/clips/CLIP_ID/download
 ```
 
+### Database metadata
+
+SQLite otomatis dibuat di `backend/clipper.db`.
+
+Tabel `videos`:
+
+- `id`
+- `video_id`
+- `original_filename`
+- `stored_filename`
+- `file_path`
+- `created_at`
+
+Tabel `clips`:
+
+- `id`
+- `clip_id`
+- `video_id`
+- `start_time_seconds`
+- `duration`
+- `output_format`
+- `width`
+- `height`
+- `filename`
+- `file_path`
+- `download_url`
+- `created_at`
+
+Daftar semua video:
+
+```bash
+curl http://localhost:8000/videos
+```
+
+Detail video:
+
+```bash
+curl http://localhost:8000/videos/VIDEO_ID
+```
+
+Daftar clip untuk video:
+
+```bash
+curl http://localhost:8000/videos/VIDEO_ID/clips
+```
+
+Detail clip:
+
+```bash
+curl http://localhost:8000/clips/CLIP_ID
+```
+
 ## Format vertical 9:16
 
 Output `vertical_9_16` menggunakan FFmpeg filter:
@@ -275,11 +330,11 @@ Setiap perubahan fitur, bug fix, atau perubahan perilaku harus menambahkan entry
 - `MINOR` untuk fitur baru
 - `PATCH` untuk bug fix kecil
 
-Rilis Tahap 6 ini dicatat sebagai `0.6.0`.
+Rilis Tahap 7 ini dicatat sebagai `0.7.0`.
 
 ## Catatan batasan
 
-- Tidak memakai database
+- Tidak memakai PostgreSQL
 - Tidak memakai Docker
 - Tidak memakai AI
 - Tidak memakai face tracking

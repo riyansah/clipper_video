@@ -14,6 +14,7 @@ backend/.coverage
 backend/htmlcov/
 backend/uploads/
 backend/outputs/
+backend/clipper.db
 *.py[cod]
 
 # Generated media
