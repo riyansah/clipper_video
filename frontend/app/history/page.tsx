@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -27,6 +27,9 @@ type Clip = {
   filename: string;
   file_path: string;
   download_url: string;
+  parent_clip_id: string | null;
+  has_subtitle: boolean;
+  subtitle_text: string | null;
   created_at: string;
 };
 
@@ -42,8 +45,14 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let message = `Request gagal (${response.status})`;
     try {
-      const payload = (await response.json()) as { detail?: string };
-      if (payload.detail) message = payload.detail;
+      const payload = (await response.json()) as {
+        detail?: string | Array<{ msg?: string }>;
+      };
+      if (typeof payload.detail === "string") {
+        message = payload.detail;
+      } else if (Array.isArray(payload.detail) && payload.detail[0]?.msg) {
+        message = payload.detail[0].msg;
+      }
     } catch {
       // Keep status fallback for non-JSON responses.
     }
@@ -62,6 +71,16 @@ function formatDate(value: string) {
   });
 }
 
+function formatSubtitleEnd(duration: number) {
+  const totalSeconds = Math.max(1, Math.ceil(duration));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+}
+
+
+
 export default function HistoryPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [clips, setClips] = useState<Clip[]>([]);
@@ -70,6 +89,11 @@ export default function HistoryPage() {
   const [loadingClips, setLoadingClips] = useState(false);
   const [deletingVideoId, setDeletingVideoId] = useState<string | null>(null);
   const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
+  const [subtitleClipId, setSubtitleClipId] = useState<string | null>(null);
+  const [subtitleText, setSubtitleText] = useState("");
+  const [subtitleStartTime, setSubtitleStartTime] = useState("00:00:00");
+  const [subtitleEndTime, setSubtitleEndTime] = useState("00:00:01");
+  const [generatingSubtitleId, setGeneratingSubtitleId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -156,6 +180,47 @@ export default function HistoryPage() {
       setDeletingVideoId(null);
     }
   }
+
+  function openSubtitleForm(clip: Clip) {
+    if (subtitleClipId === clip.clip_id) {
+      setSubtitleClipId(null);
+      return;
+    }
+
+    setSubtitleClipId(clip.clip_id);
+    setSubtitleText("");
+    setSubtitleStartTime("00:00:00");
+    setSubtitleEndTime(formatSubtitleEnd(clip.duration));
+    setError("");
+  }
+
+  async function generateSubtitle(event: FormEvent<HTMLFormElement>, clip: Clip) {
+    event.preventDefault();
+    setGeneratingSubtitleId(clip.clip_id);
+    setError("");
+
+    try {
+      const generatedClip = await apiRequest<Clip>(`/clips/${clip.clip_id}/subtitle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subtitle_text: subtitleText,
+          start_time: subtitleStartTime,
+          end_time: subtitleEndTime,
+        }),
+      });
+      setClips((currentClips) => [...currentClips, generatedClip]);
+      setSubtitleClipId(null);
+      setSubtitleText("");
+    } catch (subtitleError) {
+      const message =
+        subtitleError instanceof Error ? subtitleError.message : "Gagal membuat subtitle.";
+      setError(message.includes("Backend") ? message : `Gagal membuat subtitle: ${message}`);
+    } finally {
+      setGeneratingSubtitleId(null);
+    }
+  }
+
 
   return (
     <main className="app-shell history-shell">
@@ -255,6 +320,7 @@ export default function HistoryPage() {
                   key={clip.clip_id}
                 >
                   <div className="clip-index">{String(index + 1).padStart(2, "0")}</div>
+                  {clip.has_subtitle && <span className="subtitle-badge">Subtitled</span>}
                   <div className="video-frame">
                     <video src={`${API_URL}${clip.download_url}`} controls preload="metadata" />
                   </div>
@@ -270,14 +336,63 @@ export default function HistoryPage() {
                       Download
                     </a>
                     <button
+                      type="button"
+                      disabled={generatingSubtitleId !== null || deletingClipId !== null}
+                      onClick={() => openSubtitleForm(clip)}
+                    >
+                      {subtitleClipId === clip.clip_id ? "Close" : "Add Subtitle"}
+                    </button>
+                    <button
                       className="danger-button"
                       type="button"
-                      disabled={deletingClipId !== null}
+                      disabled={deletingClipId !== null || generatingSubtitleId !== null}
                       onClick={() => deleteClip(clip)}
                     >
                       {deletingClipId === clip.clip_id ? "Deleting..." : "Delete"}
                     </button>
                   </div>
+                  {subtitleClipId === clip.clip_id && (
+                    <form
+                      className="subtitle-form"
+                      onSubmit={(event) => generateSubtitle(event, clip)}
+                    >
+                      <label>
+                        Subtitle
+                        <textarea
+                          value={subtitleText}
+                          maxLength={500}
+                          required
+                          onChange={(event) => setSubtitleText(event.target.value)}
+                        />
+                      </label>
+                      <div className="subtitle-time-grid">
+                        <label>
+                          Start time
+                          <input
+                            type="text"
+                            value={subtitleStartTime}
+                            required
+                            onChange={(event) => setSubtitleStartTime(event.target.value)}
+                          />
+                        </label>
+                        <label>
+                          End time
+                          <input
+                            type="text"
+                            value={subtitleEndTime}
+                            required
+                            onChange={(event) => setSubtitleEndTime(event.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <button type="submit" disabled={generatingSubtitleId !== null}>
+                        {generatingSubtitleId === clip.clip_id
+                          ? "Generating..."
+                          : "Generate Subtitle"}
+                      </button>
+                    </form>
+                  )}
+
                 </article>
               ))}
             </div>

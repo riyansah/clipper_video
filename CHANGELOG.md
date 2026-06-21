@@ -4,6 +4,19 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.12.1] - 2026-06-21
+
+### Fixed
+- Memperbaiki layout frontend yang bertumpuk di layar laptop dengan membatasi style badge absolut hanya ke `.subtitle-badge`.
+
+## [0.12.0] - 2026-06-21
+
+### Added
+- Endpoint `POST /clips/{clip_id}/subtitle` untuk membuat SRT dan burn subtitle manual dengan FFmpeg.
+- Metadata clip subtitle `parent_clip_id`, `has_subtitle`, dan `subtitle_text` dengan migrasi SQLite otomatis.
+- Form subtitle sederhana di `/history` dengan waktu default dari durasi clip, loading, error, preview, dan download hasil.
+- Tes backend untuk SRT, FFmpeg, validasi, migrasi, 404, dan kegagalan output.
+
 ## [0.11.0] - 2026-06-21
 
 ### Added

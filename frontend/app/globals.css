@@ -67,11 +67,65 @@ a:active {
   pointer-events: none;
 }
 
-.topbar,
-.intro-block,
-.workspace,
-.results-section,
-.error-banner,
+.subtitle-badge {
+  position: absolute;
+  z-index: 2;
+  top: 22px;
+  right: 22px;
+  padding: 5px 7px;
+  background: var(--green);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.subtitle-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ink);
+}
+
+.subtitle-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.subtitle-form textarea,
+.subtitle-form input {
+  width: 100%;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.34);
+  color: var(--ink);
+  padding: 10px;
+}
+
+.subtitle-form textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.subtitle-time-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.subtitle-form button {
+  min-height: 40px;
+  padding: 10px;
+}
+
+
 .footer {
   position: relative;
   z-index: 1;
@@ -780,6 +834,7 @@ button:disabled {
 
 .clip-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding-top: 13px;
 }

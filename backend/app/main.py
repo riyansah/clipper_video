@@ -9,8 +9,8 @@ from uuid import uuid4
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import DateTime, Float, Integer, String, create_engine, select, text
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, create_engine, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -68,6 +68,9 @@ class Clip(Base):
     filename: Mapped[str] = mapped_column(String, nullable=False)
     file_path: Mapped[str] = mapped_column(String, nullable=False)
     download_url: Mapped[str] = mapped_column(String, nullable=False)
+    parent_clip_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    has_subtitle: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    subtitle_text: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -100,6 +103,23 @@ def init_database() -> None:
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_clips_job_id ON clips (job_id)")
             )
+        if "parent_clip_id" not in clip_columns:
+            connection.execute(text("ALTER TABLE clips ADD COLUMN parent_clip_id VARCHAR"))
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_clips_parent_clip_id "
+                    "ON clips (parent_clip_id)"
+                )
+            )
+        if "has_subtitle" not in clip_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE clips ADD COLUMN has_subtitle BOOLEAN "
+                    "NOT NULL DEFAULT 0"
+                )
+            )
+        if "subtitle_text" not in clip_columns:
+            connection.execute(text("ALTER TABLE clips ADD COLUMN subtitle_text VARCHAR"))
 
 
 def get_db_session() -> Session:
@@ -137,30 +157,42 @@ def clip_to_dict(clip: Clip) -> dict[str, int | float | str | None]:
         "filename": clip.filename,
         "file_path": clip.file_path,
         "download_url": clip.download_url,
+        "parent_clip_id": clip.parent_clip_id,
+        "has_subtitle": clip.has_subtitle,
+        "subtitle_text": clip.subtitle_text,
         "created_at": clip.created_at.isoformat(),
     }
 
 
-def save_clip_metadata(
-    session: Session, clip_payload: dict[str, str | int | float]
-) -> None:
-    session.add(
-        Clip(
-            clip_id=str(clip_payload["clip_id"]),
-            video_id=str(clip_payload["video_id"]),
-            job_id=(
-                str(clip_payload["job_id"]) if clip_payload.get("job_id") is not None else None
-            ),
-            start_time_seconds=float(clip_payload["start_time_seconds"]),
-            duration=float(clip_payload["duration"]),
-            output_format=str(clip_payload["output_format"]),
-            width=int(clip_payload["width"]),
-            height=int(clip_payload["height"]),
-            filename=str(clip_payload["filename"]),
-            file_path=str(clip_payload["file_path"]),
-            download_url=str(clip_payload["download_url"]),
-        )
+def save_clip_metadata(session: Session, clip_payload: dict[str, object]) -> Clip:
+    clip = Clip(
+        clip_id=str(clip_payload["clip_id"]),
+        video_id=str(clip_payload["video_id"]),
+        job_id=(
+            str(clip_payload["job_id"]) if clip_payload.get("job_id") is not None else None
+        ),
+        start_time_seconds=float(clip_payload["start_time_seconds"]),
+        duration=float(clip_payload["duration"]),
+        output_format=str(clip_payload["output_format"]),
+        width=int(clip_payload["width"]),
+        height=int(clip_payload["height"]),
+        filename=str(clip_payload["filename"]),
+        file_path=str(clip_payload["file_path"]),
+        download_url=str(clip_payload["download_url"]),
+        parent_clip_id=(
+            str(clip_payload["parent_clip_id"])
+            if clip_payload.get("parent_clip_id") is not None
+            else None
+        ),
+        has_subtitle=bool(clip_payload.get("has_subtitle", False)),
+        subtitle_text=(
+            str(clip_payload["subtitle_text"])
+            if clip_payload.get("subtitle_text") is not None
+            else None
+        ),
     )
+    session.add(clip)
+    return clip
 
 
 def job_to_dict(job: Job, clips: list[Clip] | None = None) -> dict[str, object]:
@@ -911,6 +943,205 @@ def auto_split_video(
         "clips": clips,
     }
 
+
+def parse_subtitle_timestamp(value: str) -> float:
+    parts = value.split(":")
+    if len(parts) != 3:
+        raise ValueError("time must use HH:MM:SS format")
+
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = float(parts[2])
+    except ValueError as exc:
+        raise ValueError("time must use HH:MM:SS format") from exc
+
+    if (
+        hours < 0
+        or minutes < 0
+        or minutes >= 60
+        or seconds < 0
+        or seconds >= 60
+        or not math.isfinite(seconds)
+    ):
+        raise ValueError("time must use a valid HH:MM:SS value")
+    return (hours * 3600) + (minutes * 60) + seconds
+
+
+def format_srt_timestamp(seconds: float) -> str:
+    total_milliseconds = round(seconds * 1000)
+    hours, remainder = divmod(total_milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{milliseconds:03d}"
+
+
+class SubtitleRequest(BaseModel):
+    subtitle_text: str = Field(max_length=500)
+    start_time: str
+    end_time: str
+
+    @field_validator("subtitle_text")
+    @classmethod
+    def subtitle_text_must_not_be_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("subtitle_text must not be empty")
+        return value
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def subtitle_time_must_be_valid(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("subtitle time must not be empty")
+        parse_subtitle_timestamp(value)
+        return value
+
+    @model_validator(mode="after")
+    def end_time_must_follow_start_time(self) -> "SubtitleRequest":
+        if parse_subtitle_timestamp(self.end_time) <= parse_subtitle_timestamp(
+            self.start_time
+        ):
+            raise ValueError("end_time must be greater than start_time")
+        return self
+
+
+def ffmpeg_subtitle_filter(subtitle_path: Path) -> str:
+    escaped_path = (
+        str(subtitle_path)
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+    )
+    return f"subtitles=filename='{escaped_path}'"
+
+
+@app.post("/clips/{clip_id}/subtitle", tags=["clips"])
+def add_clip_subtitle(
+    clip_id: str,
+    request: SubtitleRequest,
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    try:
+        source_clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read clip metadata",
+        ) from exc
+
+    if source_clip is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clip not found",
+        )
+
+    try:
+        input_path = validated_storage_path(source_clip.file_path, OUTPUT_DIR)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clip file not found",
+        ) from exc
+    if not input_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clip file not found",
+        )
+
+    new_clip_id = str(uuid4())
+    filename = f"{new_clip_id}_subtitled.mp4"
+    output_path = OUTPUT_DIR / filename
+    subtitle_dir = OUTPUT_DIR / "subtitles"
+    subtitle_path = subtitle_dir / f"{new_clip_id}.srt"
+    subtitle_content = (
+        "1\n"
+        f"{format_srt_timestamp(parse_subtitle_timestamp(request.start_time))} --> "
+        f"{format_srt_timestamp(parse_subtitle_timestamp(request.end_time))}\n"
+        f"{request.subtitle_text}\n"
+    )
+
+    try:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        subtitle_dir.mkdir(parents=True, exist_ok=True)
+        subtitle_path.write_text(subtitle_content, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create subtitle file",
+        ) from exc
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vf",
+        ffmpeg_subtitle_filter(subtitle_path),
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(command, capture_output=True, text=True, check=True)
+    except FileNotFoundError as exc:
+        output_path.unlink(missing_ok=True)
+        subtitle_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="FFmpeg executable was not found",
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        output_path.unlink(missing_ok=True)
+        subtitle_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="FFmpeg failed to burn subtitle",
+        ) from exc
+
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        output_path.unlink(missing_ok=True)
+        subtitle_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="FFmpeg did not create a subtitled output file",
+        )
+
+    clip_payload: dict[str, object] = {
+        "clip_id": new_clip_id,
+        "video_id": source_clip.video_id,
+        "job_id": source_clip.job_id,
+        "start_time_seconds": source_clip.start_time_seconds,
+        "duration": source_clip.duration,
+        "output_format": source_clip.output_format,
+        "width": source_clip.width,
+        "height": source_clip.height,
+        "filename": filename,
+        "file_path": str(Path("outputs") / filename),
+        "download_url": f"/clips/{new_clip_id}/download",
+        "parent_clip_id": source_clip.clip_id,
+        "has_subtitle": True,
+        "subtitle_text": request.subtitle_text,
+    }
+    try:
+        new_clip = save_clip_metadata(session, clip_payload)
+        session.commit()
+        session.refresh(new_clip)
+    except SQLAlchemyError as exc:
+        session.rollback()
+        output_path.unlink(missing_ok=True)
+        subtitle_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save subtitled clip metadata",
+        ) from exc
+
+    return clip_to_dict(new_clip)
 
 @app.get("/clips/{clip_id}", tags=["clips"])
 def get_clip(

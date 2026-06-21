@@ -1,6 +1,6 @@
 # Clipper Video
 
-Aplikasi web lokal untuk upload MP4, manual cut, auto split, output `original` atau `vertical_9_16`, preview, download, riwayat, dan cleanup video/clip.
+Aplikasi web lokal untuk upload MP4, manual cut, auto split, subtitle manual, output `original` atau `vertical_9_16`, preview, download, riwayat, dan cleanup video/clip.
 
 ## Stack
 
@@ -20,6 +20,7 @@ Aplikasi web lokal untuk upload MP4, manual cut, auto split, output `original` a
 - Halaman riwayat `/history` untuk melihat video tersimpan dan clip per video
 - Metadata video, clip, dan job tersimpan di SQLite
 - Delete clip atau video beserta file lokal dan metadata terkait
+- Subtitle manual yang di-burn ke clip dengan FFmpeg
 
 ## Setup
 
@@ -77,6 +78,7 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 - `GET /jobs/{job_id}`
 - `GET /clips/{clip_id}`
 - `GET /clips/{clip_id}/download`
+- `POST /clips/{clip_id}/subtitle`
 - `DELETE /clips/{clip_id}`
 
 `GET /videos` mengembalikan `video_id`, `original_filename`, `stored_filename`, `file_path`, dan `created_at`.
@@ -84,6 +86,32 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 `GET /videos/{video_id}/clips` mengembalikan `clip_id`, `video_id`, `job_id`, `start_time_seconds`, `duration`, `output_format`, `width`, `height`, `filename`, `file_path`, `download_url`, dan `created_at`.
 
 Auto split menerima `clip_duration_seconds`, `max_clips`, dan `output_format`; jika durasi tidak dikirim, backend memakai default 60 detik.
+
+## Subtitle manual
+
+`POST /clips/{clip_id}/subtitle` menerima `subtitle_text` maksimal 500 karakter, `start_time`, dan `end_time` dalam format `HH:MM:SS`. Backend membuat SRT di `backend/outputs/subtitles/{new_clip_id}.srt` dengan format:
+
+```text
+1
+00:00:00,000 --> 00:01:00,000
+teks subtitle
+```
+
+Subtitle di-burn dengan command setara berikut:
+
+```bash
+ffmpeg -y -i INPUT.mp4 -vf "subtitles=filename=SUBTITLE.srt" -c:v libx264 -c:a copy -movflags +faststart OUTPUT_subtitled.mp4
+```
+
+Kolom `parent_clip_id`, `has_subtitle`, dan `subtitle_text` ditambahkan otomatis oleh `init_database()` saat backend pertama dijalankan. Data clip lama tetap dipertahankan dan tidak memerlukan perintah migrasi manual.
+
+Test dengan `clip_id` yang sudah ada:
+
+```bash
+curl -X POST http://localhost:8000/clips/CLIP_ID/subtitle \
+  -H "Content-Type: application/json" \
+  -d '{"subtitle_text":"teks subtitle","start_time":"00:00:00","end_time":"00:01:00"}'
+```
 
 ## Test endpoint delete dengan curl
 
@@ -108,9 +136,9 @@ Response sukses melaporkan metadata dan file yang dihapus. Jika metadata ada tet
 3. Upload MP4, lalu buat clip dengan manual cut atau auto split.
 4. Klik `History` atau buka `http://localhost:3000/history`.
 5. Klik `Lihat Clips` pada salah satu video.
-6. Klik `Delete` pada satu clip, konfirmasi, lalu pastikan clip hilang dari tampilan.
-7. Klik `Delete video`, baca konfirmasi bahwa semua clip ikut dihapus, lalu konfirmasi.
-8. Pastikan video hilang dan panel clip kosong jika video tersebut sebelumnya dipilih.
+6. Klik `Add Subtitle`, isi teks serta waktu mulai/akhir, lalu klik `Generate Subtitle`.
+7. Pastikan clip baru berlabel `Subtitled` muncul, dapat dipreview, dan dapat didownload.
+8. Untuk menguji cleanup, klik `Delete` pada clip atau `Delete video` lalu konfirmasi.
 
 ## Testing
 
@@ -141,7 +169,8 @@ Gunakan versi semantik sederhana:
 - `MINOR` untuk fitur baru
 - `PATCH` untuk bug fix kecil atau dokumentasi
 
-Rilis delete dan cleanup storage dicatat sebagai `0.11.0`.
+Rilis subtitle manual dicatat sebagai `0.12.0`.
+Perbaikan layout overlap di frontend desktop dicatat sebagai `0.12.1`.
 
 ## Batasan
 
