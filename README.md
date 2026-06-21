@@ -265,6 +265,18 @@ cd frontend
 npm run build
 ```
 
+## Versioning dan update logs
+
+Versi aplikasi saat ini dicatat di `VERSION`.
+
+Setiap perubahan fitur, bug fix, atau perubahan perilaku harus menambahkan entry baru di `CHANGELOG.md` sebelum commit. Gunakan format versi semantik sederhana:
+
+- `MAJOR` untuk perubahan besar yang tidak kompatibel
+- `MINOR` untuk fitur baru
+- `PATCH` untuk bug fix kecil
+
+Rilis Tahap 6 ini dicatat sebagai `0.6.0`.
+
 ## Catatan batasan
 
 - Tidak memakai database

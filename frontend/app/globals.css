@@ -203,6 +203,115 @@ a:active {
   letter-spacing: -0.05em;
 }
 
+
+.api-url {
+  max-width: min(48vw, 460px);
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-picker {
+  display: flex;
+  min-height: 210px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--ink);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.42), transparent),
+    repeating-linear-gradient(45deg, transparent 0 12px, rgba(24, 25, 21, 0.025) 12px 24px);
+  cursor: pointer;
+  text-align: center;
+}
+
+.file-picker.has-file {
+  border-style: solid;
+  background: rgba(47, 143, 70, 0.1);
+}
+
+.file-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.file-picker strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: clamp(20px, 2.3vw, 30px);
+  letter-spacing: -0.04em;
+}
+
+.file-picker span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.full-button {
+  width: 100%;
+  margin-top: 18px;
+}
+
+.control-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: clamp(18px, 2vw, 28px);
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.control-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.control-form input,
+.control-form select {
+  width: 100%;
+  border: 1px solid currentColor;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  padding: 12px;
+}
+
+.control-form select option {
+  color: var(--ink);
+}
+
+.control-form input:focus,
+.control-form select:focus {
+  box-shadow: inset 3px 0 var(--signal);
+}
+
+.control-form button {
+  min-height: 44px;
+  border-color: var(--paper);
+  color: var(--paper);
+}
+
+.control-form button:hover:not(:disabled) {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.edit-panel.locked .control-form {
+  opacity: 0.28;
+  pointer-events: none;
+}
+
 .dropzone {
   position: relative;
   display: grid;
@@ -630,7 +739,9 @@ button:disabled {
     padding: 20px;
   }
 
-  .dropzone {
+
+
+.dropzone {
     min-height: 230px;
   }
 
