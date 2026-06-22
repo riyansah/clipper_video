@@ -1,7 +1,10 @@
 import json
 import math
 import os
+import re
 import subprocess
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal, Protocol
@@ -31,6 +34,14 @@ VALID_OUTPUT_FORMATS = {"original", "vertical_9_16"}
 VALID_JOB_STATUSES = {"pending", "processing", "completed", "failed"}
 VALID_TRANSCRIPT_STATUSES = {"pending", "processing", "completed", "failed"}
 TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "dummy").strip().lower() or "dummy"
+AI_HIGHLIGHT_PROVIDER = os.getenv("AI_HIGHLIGHT_PROVIDER", "dummy").strip().lower() or "dummy"
+AI_HIGHLIGHT_API_URL = os.getenv("AI_HIGHLIGHT_API_URL", "").strip()
+AI_HIGHLIGHT_API_KEY = os.getenv("AI_HIGHLIGHT_API_KEY", "").strip()
+AI_HIGHLIGHT_MODEL = os.getenv("AI_HIGHLIGHT_MODEL", "").strip()
+QUESTION_KEYWORDS = {"apa", "kenapa", "mengapa", "bagaimana", "gimana", "kapan", "siapa"}
+EMOTIONAL_KEYWORDS = {"penting", "wajib", "jangan", "gagal", "rahasia", "mudah", "cepat", "mahal", "murah", "bahaya", "kesalahan", "solusi", "tips"}
+MAX_AI_HIGHLIGHT_CANDIDATES = 5
+MAX_AI_HIGHLIGHT_TEXT_LENGTH = 400
 VERTICAL_9_16_FILTER = (
     "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
     "crop=1080:1920,gblur=sigma=30[bg];"
@@ -107,6 +118,41 @@ class Transcript(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class HighlightCandidate(Base):
+    __tablename__ = "highlight_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    highlight_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    transcript_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    clip_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    video_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    start_time: Mapped[float] = mapped_column(Float, nullable=False)
+    end_time: Mapped[float] = mapped_column(Float, nullable=False)
+    duration: Mapped[float] = mapped_column(Float, nullable=False)
+    text: Mapped[str] = mapped_column(String, nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AIHighlightRanking(Base):
+    __tablename__ = "ai_highlight_rankings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    ai_ranking_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    highlight_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    clip_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    video_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    caption: Mapped[str] = mapped_column(String, nullable=False)
+    hashtags_json: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    raw_response_json: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -155,6 +201,36 @@ def init_database() -> None:
                     )
                 )
 
+        highlight_table = connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='highlight_candidates'")
+        ).fetchone()
+        if highlight_table is not None:
+            highlight_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(highlight_candidates)"))
+            }
+            if "created_at" not in highlight_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE highlight_candidates ADD COLUMN created_at DATETIME "
+                        "DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
+
+        ai_ranking_table = connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_highlight_rankings'")
+        ).fetchone()
+        if ai_ranking_table is not None:
+            ai_ranking_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(ai_highlight_rankings)"))
+            }
+            if "created_at" not in ai_ranking_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE ai_highlight_rankings ADD COLUMN created_at DATETIME "
+                        "DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
+
 
 def get_db_session() -> Session:
     init_database()
@@ -164,6 +240,13 @@ def get_db_session() -> Session:
 
 def normalize_number(value: float) -> int | float:
     return int(value) if float(value).is_integer() else value
+
+
+def format_api_timestamp(seconds: float) -> str:
+    total_seconds = max(0, round(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, whole_seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}"
 
 
 def video_to_dict(video: Video) -> dict[str, int | str]:
@@ -265,6 +348,30 @@ def transcript_to_dict(transcript: Transcript) -> dict[str, object]:
     }
 
 
+def highlight_to_dict(highlight: HighlightCandidate) -> dict[str, object]:
+    return {
+        "highlight_id": highlight.highlight_id,
+        "start_time": format_api_timestamp(highlight.start_time),
+        "end_time": format_api_timestamp(highlight.end_time),
+        "duration": normalize_number(highlight.duration),
+        "text": highlight.text,
+        "score": highlight.score,
+        "reason": highlight.reason,
+    }
+
+
+def deserialize_hashtags(hashtags_json: str | None) -> list[str]:
+    if not hashtags_json:
+        return []
+    try:
+        payload = json.loads(hashtags_json)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload if str(item).strip()]
+
+
 def storage_path_from_database(file_path: str) -> Path:
     path = Path(file_path)
     if path.is_absolute():
@@ -349,6 +456,214 @@ def get_transcription_provider() -> TranscriptionProvider:
     if TRANSCRIPTION_PROVIDER == "api":
         return APITranscriptionProvider()
     raise RuntimeError(f"Unsupported transcription provider: {TRANSCRIPTION_PROVIDER}")
+
+
+class AIHighlightRankingItem(BaseModel):
+    highlight_id: str
+    score: int = Field(ge=0, le=100)
+    title: str
+    reason: str
+    caption: str
+    hashtags: list[str] = Field(default_factory=list)
+
+    @field_validator("title", "reason")
+    @classmethod
+    def text_fields_must_not_be_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("value must not be empty")
+        return value.strip()
+
+    @field_validator("caption")
+    @classmethod
+    def caption_must_be_string(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("hashtags", mode="before")
+    @classmethod
+    def hashtags_must_be_array(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError("hashtags must be an array")
+        return value
+
+
+class AIHighlightRankerResult(BaseModel):
+    rankings: list[AIHighlightRankingItem]
+    raw_response: object
+
+
+class AIHighlightRanker(Protocol):
+    provider_name: str
+
+    def rank_highlights(
+        self, clip: Clip, candidates: list[HighlightCandidate]
+    ) -> AIHighlightRankerResult:
+        ...
+
+
+def truncate_candidate_text(text_value: str) -> str:
+    normalized = re.sub(r"\s+", " ", text_value).strip()
+    return normalized[:MAX_AI_HIGHLIGHT_TEXT_LENGTH]
+
+
+def build_ai_highlight_prompt(candidates: list[HighlightCandidate]) -> str:
+    candidate_lines = []
+    for candidate in candidates:
+        candidate_lines.append(
+            json.dumps(
+                {
+                    "highlight_id": candidate.highlight_id,
+                    "start_time": format_api_timestamp(candidate.start_time),
+                    "end_time": format_api_timestamp(candidate.end_time),
+                    "text": truncate_candidate_text(candidate.text),
+                },
+                ensure_ascii=False,
+            )
+        )
+    return "\n".join(
+        [
+            "Rank the following highlight candidates for short-form video potential.",
+            "Return only valid JSON.",
+            "Score must be an integer between 0 and 100.",
+            "Use this exact JSON array shape:",
+            "[",
+            '  {"highlight_id":"...","score":85,"title":"...","reason":"...","caption":"...","hashtags":["...","..."]}',
+            "]",
+            "Candidates:",
+            *candidate_lines,
+        ]
+    )
+
+
+def parse_external_ranking_payload(payload: object) -> list[object]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("rankings", "highlights", "results", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, list):
+                    return parsed
+        for key in ("output_text", "content", "text"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, list):
+                    return parsed
+    raise RuntimeError("External AI provider returned unsupported JSON payload")
+
+
+def validate_ai_ranking_items(
+    ranking_items: list[object],
+    candidates: list[HighlightCandidate],
+) -> list[AIHighlightRankingItem]:
+    candidate_map = {candidate.highlight_id: candidate for candidate in candidates}
+    validated: list[AIHighlightRankingItem] = []
+    for raw_item in ranking_items[:MAX_AI_HIGHLIGHT_CANDIDATES]:
+        item = AIHighlightRankingItem.model_validate(raw_item)
+        if item.highlight_id not in candidate_map:
+            raise RuntimeError(f"Unknown highlight_id returned by AI: {item.highlight_id}")
+        validated.append(item)
+    if not validated:
+        raise RuntimeError("AI provider returned no valid highlight rankings")
+    validated.sort(
+        key=lambda item: (
+            -item.score,
+            candidates.index(candidate_map[item.highlight_id]),
+        )
+    )
+    return validated
+
+
+class DummyAIHighlightRanker:
+    provider_name = "dummy"
+
+    def rank_highlights(
+        self, clip: Clip, candidates: list[HighlightCandidate]
+    ) -> AIHighlightRankerResult:
+        rankings: list[AIHighlightRankingItem] = []
+        for index, candidate in enumerate(candidates[:MAX_AI_HIGHLIGHT_CANDIDATES], start=1):
+            score = max(0, min(100, candidate.score + 5 - index))
+            short_text = truncate_candidate_text(candidate.text)
+            rankings.append(
+                AIHighlightRankingItem(
+                    highlight_id=candidate.highlight_id,
+                    score=score,
+                    title=f"Highlight #{index}: {short_text[:40] or 'Clip moment'}",
+                    reason=(
+                        f"Dummy ranking memilih kandidat ini karena rule score {candidate.score} "
+                        f"dan durasi {normalize_number(candidate.duration)} detik."
+                    ),
+                    caption=f"{short_text} #{index}",
+                    hashtags=["highlight", "clipper", f"clip{index}"],
+                )
+            )
+        rankings.sort(key=lambda item: -item.score)
+        return AIHighlightRankerResult(
+            rankings=rankings,
+            raw_response=[item.model_dump() for item in rankings],
+        )
+
+
+class ExternalAIHighlightRanker:
+    provider_name = "external"
+
+    def rank_highlights(
+        self, clip: Clip, candidates: list[HighlightCandidate]
+    ) -> AIHighlightRankerResult:
+        if not AI_HIGHLIGHT_API_URL:
+            raise RuntimeError("AI_HIGHLIGHT_API_URL is not configured")
+        if not AI_HIGHLIGHT_API_KEY:
+            raise RuntimeError("AI_HIGHLIGHT_API_KEY is not configured")
+
+        payload = {
+            "model": AI_HIGHLIGHT_MODEL or "generic-highlight-ranker",
+            "prompt": build_ai_highlight_prompt(candidates),
+        }
+        request = urllib_request.Request(
+            AI_HIGHLIGHT_API_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {AI_HIGHLIGHT_API_KEY}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=30) as response:
+                raw_body = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"External AI provider returned HTTP {exc.code}: {detail or exc.reason}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"External AI provider request failed: {exc.reason}") from exc
+
+        try:
+            payload_json = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("External AI provider returned invalid JSON") from exc
+
+        ranking_items = parse_external_ranking_payload(payload_json)
+        return AIHighlightRankerResult(
+            rankings=validate_ai_ranking_items(ranking_items, candidates),
+            raw_response=payload_json,
+        )
+
+
+def get_ai_highlight_ranker() -> AIHighlightRanker:
+    if AI_HIGHLIGHT_PROVIDER == "dummy":
+        return DummyAIHighlightRanker()
+    if AI_HIGHLIGHT_PROVIDER == "external":
+        return ExternalAIHighlightRanker()
+    raise RuntimeError(f"Unsupported AI highlight provider: {AI_HIGHLIGHT_PROVIDER}")
 
 
 def extract_clip_audio(input_path: Path, audio_path: Path) -> None:
@@ -1109,6 +1424,44 @@ class TranscriptResponse(BaseModel):
     updated_at: str
 
 
+class HighlightResponse(BaseModel):
+    highlight_id: str
+    start_time: str
+    end_time: str
+    duration: int | float
+    text: str
+    score: int
+    reason: str
+
+
+class HighlightListResponse(BaseModel):
+    clip_id: str
+    transcript_id: str
+    highlights: list[HighlightResponse]
+
+
+class AIHighlightResponse(BaseModel):
+    ai_ranking_id: str
+    highlight_id: str
+    clip_id: str
+    video_id: str
+    score: int
+    title: str
+    reason: str
+    caption: str
+    hashtags: list[str]
+    provider: str
+    raw_response_json: object
+    created_at: str
+    start_time: str | None = None
+    end_time: str | None = None
+
+
+class AIHighlightListResponse(BaseModel):
+    clip_id: str
+    ai_highlights: list[AIHighlightResponse]
+
+
 def get_clip_or_404(session: Session, clip_id: str) -> Clip:
     try:
         clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
@@ -1139,6 +1492,220 @@ def transcribe_error_message(exc: Exception) -> str:
     if isinstance(exc, subprocess.CalledProcessError):
         return "FFmpeg failed to extract clip audio"
     return str(exc)
+
+
+def parse_segment_time(value: object, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(parsed):
+        return fallback
+    return max(0.0, parsed)
+
+
+def normalize_highlight_segments(transcript: Transcript, clip: Clip) -> list[dict[str, object]]:
+    raw_segments = deserialize_segments(transcript.segments_json)
+    normalized: list[dict[str, object]] = []
+    for segment in raw_segments:
+        start_time = parse_segment_time(segment.get("start"), 0.0)
+        end_time = parse_segment_time(segment.get("end"), start_time)
+        text_value = str(segment.get("text") or transcript.transcript_text or "").strip()
+        if end_time <= start_time:
+            continue
+        if not text_value:
+            continue
+        normalized.append({
+            "start": start_time,
+            "end": min(end_time, float(clip.duration)),
+            "text": text_value,
+        })
+
+    if normalized:
+        return normalized
+
+    fallback_end = min(float(clip.duration), 60.0) if clip.duration > 0 else 0.0
+    fallback_text = (transcript.transcript_text or "Transcript segment is unavailable").strip()
+    if fallback_end <= 0:
+        fallback_end = 1.0
+    return [{"start": 0.0, "end": fallback_end, "text": fallback_text}]
+
+
+def build_highlight_reason(duration: float, text_value: str, single_long_fallback: bool) -> tuple[int, str]:
+    score = 50
+    reasons: list[str] = []
+    lowered_text = text_value.casefold()
+    tokens = set(re.findall(r"[0-9A-Za-z_]+", lowered_text))
+
+    if 20 <= duration <= 60:
+        score += 25
+        reasons.append("ideal duration")
+    elif duration < 10:
+        score -= 20
+        reasons.append("too short")
+    elif duration > 90:
+        score -= 25
+        reasons.append("too long")
+
+    if tokens & QUESTION_KEYWORDS:
+        score += 15
+        reasons.append("contains question keyword")
+    if re.search(r"\d", text_value):
+        score += 10
+        reasons.append("contains number")
+    if tokens & EMOTIONAL_KEYWORDS:
+        score += 15
+        reasons.append("contains emotional keyword")
+    if single_long_fallback:
+        reasons.append("single segment fallback")
+
+    score = max(0, min(100, score))
+    if not reasons:
+        reasons.append("base segment score")
+    return score, " and ".join(reason.capitalize() for reason in reasons)
+
+
+def detect_highlight_candidates(transcript: Transcript, clip: Clip) -> list[dict[str, object]]:
+    segments = normalize_highlight_segments(transcript, clip)
+    candidates: list[dict[str, object]] = []
+    single_segment = len(segments) == 1
+
+    for segment in segments:
+        start_time = float(segment["start"])
+        end_time = float(segment["end"])
+        single_long_fallback = False
+        if single_segment and (end_time - start_time) > 60:
+            end_time = min(start_time + 60.0, float(clip.duration))
+            single_long_fallback = True
+        duration = max(1.0, end_time - start_time)
+        score, reason = build_highlight_reason(duration, str(segment["text"]), single_long_fallback)
+        candidates.append({
+            "highlight_id": str(uuid4()),
+            "transcript_id": transcript.transcript_id,
+            "clip_id": clip.clip_id,
+            "video_id": clip.video_id,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration": duration,
+            "text": str(segment["text"]),
+            "score": score,
+            "reason": reason,
+        })
+
+    candidates.sort(key=lambda item: (-int(item["score"]), float(item["start_time"])))
+    return candidates
+
+
+def save_highlight_candidates(
+    session: Session,
+    clip: Clip,
+    transcript: Transcript,
+    candidates: list[dict[str, object]],
+) -> list[HighlightCandidate]:
+    session.query(HighlightCandidate).filter(HighlightCandidate.clip_id == clip.clip_id).delete()
+    stored: list[HighlightCandidate] = []
+    for candidate in candidates:
+        highlight = HighlightCandidate(
+            highlight_id=str(candidate["highlight_id"]),
+            transcript_id=transcript.transcript_id,
+            clip_id=clip.clip_id,
+            video_id=clip.video_id,
+            start_time=float(candidate["start_time"]),
+            end_time=float(candidate["end_time"]),
+            duration=float(candidate["duration"]),
+            text=str(candidate["text"]),
+            score=int(candidate["score"]),
+            reason=str(candidate["reason"]),
+        )
+        session.add(highlight)
+        stored.append(highlight)
+    session.commit()
+    for highlight in stored:
+        session.refresh(highlight)
+    stored.sort(key=lambda item: (-item.score, item.start_time))
+    return stored
+
+
+def get_clip_highlights(session: Session, clip_id: str) -> list[HighlightCandidate]:
+    return session.scalars(
+        select(HighlightCandidate)
+        .where(HighlightCandidate.clip_id == clip_id)
+        .order_by(HighlightCandidate.score.desc(), HighlightCandidate.start_time.asc())
+    ).all()
+
+
+def get_top_highlight_candidates(session: Session, clip_id: str) -> list[HighlightCandidate]:
+    return session.scalars(
+        select(HighlightCandidate)
+        .where(HighlightCandidate.clip_id == clip_id)
+        .order_by(HighlightCandidate.score.desc(), HighlightCandidate.start_time.asc())
+        .limit(MAX_AI_HIGHLIGHT_CANDIDATES)
+    ).all()
+
+
+def build_ai_highlight_response(
+    ranking: AIHighlightRanking,
+    highlight_map: dict[str, HighlightCandidate],
+) -> dict[str, object]:
+    highlight = highlight_map.get(ranking.highlight_id)
+    return {
+        "ai_ranking_id": ranking.ai_ranking_id,
+        "highlight_id": ranking.highlight_id,
+        "clip_id": ranking.clip_id,
+        "video_id": ranking.video_id,
+        "score": ranking.score,
+        "title": ranking.title,
+        "reason": ranking.reason,
+        "caption": ranking.caption,
+        "hashtags": deserialize_hashtags(ranking.hashtags_json),
+        "provider": ranking.provider,
+        "raw_response_json": json.loads(ranking.raw_response_json),
+        "created_at": ranking.created_at.isoformat(),
+        "start_time": format_api_timestamp(highlight.start_time) if highlight else None,
+        "end_time": format_api_timestamp(highlight.end_time) if highlight else None,
+    }
+
+
+def save_ai_highlight_rankings(
+    session: Session,
+    clip: Clip,
+    rankings: list[AIHighlightRankingItem],
+    provider_name: str,
+    raw_response: object,
+) -> list[AIHighlightRanking]:
+    ai_ranking_id = str(uuid4())
+    raw_response_json = json.dumps(raw_response, ensure_ascii=False)
+    session.query(AIHighlightRanking).filter(AIHighlightRanking.clip_id == clip.clip_id).delete()
+    stored: list[AIHighlightRanking] = []
+    for ranking in rankings:
+        item = AIHighlightRanking(
+            ai_ranking_id=ai_ranking_id,
+            highlight_id=ranking.highlight_id,
+            clip_id=clip.clip_id,
+            video_id=clip.video_id,
+            score=ranking.score,
+            title=ranking.title,
+            reason=ranking.reason,
+            caption=ranking.caption,
+            hashtags_json=json.dumps(ranking.hashtags, ensure_ascii=False),
+            provider=provider_name,
+            raw_response_json=raw_response_json,
+        )
+        session.add(item)
+        stored.append(item)
+    session.commit()
+    for item in stored:
+        session.refresh(item)
+    stored.sort(key=lambda item: (-item.score, item.id))
+    return stored
+
+
+def get_clip_ai_rankings(session: Session, clip_id: str) -> list[AIHighlightRanking]:
+    return session.scalars(
+        select(AIHighlightRanking)
+        .where(AIHighlightRanking.clip_id == clip_id)
+        .order_by(AIHighlightRanking.score.desc(), AIHighlightRanking.id.asc())
+    ).all()
 
 
 @app.post("/clips/{clip_id}/transcribe", tags=["clips"], response_model=TranscriptResponse)
@@ -1237,6 +1804,142 @@ def get_clip_transcript(
             detail="Transcript not found",
         )
     return transcript_to_dict(transcript)
+
+
+@app.post("/clips/{clip_id}/detect-highlights", tags=["clips"], response_model=HighlightListResponse)
+def detect_clip_highlights(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, object]:
+    clip = get_clip_or_404(session, clip_id)
+    transcript = get_latest_transcript(session, clip_id)
+    if transcript is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transcript not found",
+        )
+    if transcript.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Transcript status must be completed, got {transcript.status}",
+        )
+
+    candidates = detect_highlight_candidates(transcript, clip)
+    try:
+        stored_candidates = save_highlight_candidates(session, clip, transcript, candidates)
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save highlight candidates",
+        ) from exc
+
+    return {
+        "clip_id": clip.clip_id,
+        "transcript_id": transcript.transcript_id,
+        "highlights": [highlight_to_dict(highlight) for highlight in stored_candidates],
+    }
+
+
+@app.get("/clips/{clip_id}/highlights", tags=["clips"], response_model=HighlightListResponse)
+def list_clip_highlights(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, object]:
+    clip = get_clip_or_404(session, clip_id)
+    highlights = get_clip_highlights(session, clip_id)
+    if not highlights:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Highlight candidates not found",
+        )
+    return {
+        "clip_id": clip.clip_id,
+        "transcript_id": highlights[0].transcript_id,
+        "highlights": [highlight_to_dict(highlight) for highlight in highlights],
+    }
+
+
+@app.post("/clips/{clip_id}/ai-rank-highlights", tags=["clips"], response_model=AIHighlightListResponse)
+def ai_rank_clip_highlights(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, object]:
+    clip = get_clip_or_404(session, clip_id)
+    candidates = get_top_highlight_candidates(session, clip_id)
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No highlight candidates found. Run detect-highlights first.",
+        )
+
+    provider = get_ai_highlight_ranker()
+    try:
+        result = provider.rank_highlights(clip, candidates)
+        provider_name = provider.provider_name
+        raw_response = result.raw_response
+        rankings = result.rankings
+    except Exception as exc:
+        if provider.provider_name == "dummy":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"AI highlight ranking failed: {exc}",
+            ) from exc
+        fallback = DummyAIHighlightRanker()
+        fallback_result = fallback.rank_highlights(clip, candidates)
+        provider_name = fallback.provider_name
+        raw_response = {
+            "fallback_from": provider.provider_name,
+            "error": str(exc),
+            "rankings": [item.model_dump() for item in fallback_result.rankings],
+        }
+        rankings = fallback_result.rankings
+
+    try:
+        stored_rankings = save_ai_highlight_rankings(
+            session,
+            clip,
+            rankings,
+            provider_name=provider_name,
+            raw_response=raw_response,
+        )
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save AI highlight rankings",
+        ) from exc
+
+    highlight_map = {candidate.highlight_id: candidate for candidate in candidates}
+    return {
+        "clip_id": clip.clip_id,
+        "ai_highlights": [
+            build_ai_highlight_response(ranking, highlight_map)
+            for ranking in stored_rankings
+        ],
+    }
+
+
+@app.get("/clips/{clip_id}/ai-highlights", tags=["clips"], response_model=AIHighlightListResponse)
+def list_clip_ai_highlights(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, object]:
+    get_clip_or_404(session, clip_id)
+    rankings = get_clip_ai_rankings(session, clip_id)
+    if not rankings:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AI highlight rankings not found",
+        )
+    highlight_ids = [ranking.highlight_id for ranking in rankings]
+    highlights = session.scalars(
+        select(HighlightCandidate).where(HighlightCandidate.highlight_id.in_(highlight_ids))
+    ).all()
+    highlight_map = {highlight.highlight_id: highlight for highlight in highlights}
+    return {
+        "clip_id": clip_id,
+        "ai_highlights": [
+            build_ai_highlight_response(ranking, highlight_map)
+            for ranking in rankings
+        ],
+    }
 
 
 @app.post("/clips/{clip_id}/auto-subtitle-from-transcript", tags=["clips"])

@@ -4,6 +4,26 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.15.0] - 2026-06-22
+
+### Added
+- Tabel SQLite `ai_highlight_rankings` untuk menyimpan hasil AI ranking per clip beserta `title`, `reason`, `caption`, `hashtags_json`, provider, dan raw response JSON.
+- Arsitektur `AIHighlightRanker` dengan `DummyAIHighlightRanker` sebagai default lewat `AI_HIGHLIGHT_PROVIDER=dummy` dan `ExternalAIHighlightRanker` sebagai integrasi eksternal yang dibatasi ke maksimum 5 kandidat teks.
+- Endpoint `POST /clips/{clip_id}/ai-rank-highlights` untuk mengambil maksimum 5 highlight candidate teratas, mengirim hanya teks dan timestamp ke provider AI, lalu menyimpan ranking ke SQLite.
+- Endpoint `GET /clips/{clip_id}/ai-highlights` untuk mengambil hasil AI ranking per clip dalam urutan score tertinggi.
+- Tombol `AI Rank Highlights` dan `View AI Highlights` di `/history` beserta loading state dan tampilan score, title, reason, caption, hashtags, serta timestamp highlight.
+- Tes backend untuk alur AI ranking dummy, batas 5 kandidat, fallback provider eksternal ke dummy, error kandidat kosong, dan pembuatan tabel baru.
+
+## [0.14.0] - 2026-06-22
+
+### Added
+- Tabel SQLite `highlight_candidates` untuk menyimpan kandidat highlight hasil deteksi rule-based dari transcript.
+- Endpoint `POST /clips/{clip_id}/detect-highlights` untuk membaca transcript terbaru berstatus `completed`, menjalankan scoring rule-based, dan menyimpan hasilnya.
+- Endpoint `GET /clips/{clip_id}/highlights` untuk mengambil daftar highlight candidate per clip dalam urutan score tertinggi.
+- Fallback single-segment yang membatasi kandidat highlight maksimum 60 detik bila transcript hanya memiliki satu segment panjang.
+- Tombol `Detect Highlights` dan `View Highlights` di `/history` beserta loading state dan tampilan daftar kandidat highlight.
+- Tes backend untuk scoring highlight, transcript status, sorting score, fallback 60 detik, dan pembuatan tabel baru.
+
 ## [0.13.0] - 2026-06-22
 
 ### Added

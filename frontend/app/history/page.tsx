@@ -46,6 +46,44 @@ type Transcript = {
   updated_at: string;
 };
 
+type Highlight = {
+  highlight_id: string;
+  start_time: string;
+  end_time: string;
+  duration: number;
+  text: string;
+  score: number;
+  reason: string;
+};
+
+type HighlightList = {
+  clip_id: string;
+  transcript_id: string;
+  highlights: Highlight[];
+};
+
+type AIHighlight = {
+  ai_ranking_id: string;
+  highlight_id: string;
+  clip_id: string;
+  video_id: string;
+  score: number;
+  title: string;
+  reason: string;
+  caption: string;
+  hashtags: string[];
+  provider: string;
+  raw_response_json: unknown;
+  created_at: string;
+  start_time: string | null;
+  end_time: string | null;
+};
+
+type AIHighlightList = {
+  clip_id: string;
+  ai_highlights: AIHighlight[];
+};
+
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
 
@@ -109,6 +147,14 @@ export default function HistoryPage() {
   const [transcriptClipId, setTranscriptClipId] = useState<string | null>(null);
   const [generatingTranscriptId, setGeneratingTranscriptId] = useState<string | null>(null);
   const [loadingTranscriptId, setLoadingTranscriptId] = useState<string | null>(null);
+  const [highlightsByClip, setHighlightsByClip] = useState<Record<string, HighlightList>>({});
+  const [highlightClipId, setHighlightClipId] = useState<string | null>(null);
+  const [detectingHighlightId, setDetectingHighlightId] = useState<string | null>(null);
+  const [loadingHighlightId, setLoadingHighlightId] = useState<string | null>(null);
+  const [aiHighlightsByClip, setAiHighlightsByClip] = useState<Record<string, AIHighlightList>>({});
+  const [aiHighlightClipId, setAiHighlightClipId] = useState<string | null>(null);
+  const [rankingAiHighlightId, setRankingAiHighlightId] = useState<string | null>(null);
+  const [loadingAiHighlightId, setLoadingAiHighlightId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -141,6 +187,10 @@ export default function HistoryPage() {
     setClips([]);
     setTranscripts({});
     setTranscriptClipId(null);
+    setHighlightsByClip({});
+    setHighlightClipId(null);
+    setAiHighlightsByClip({});
+    setAiHighlightClipId(null);
     setLoadingClips(true);
     setError("");
 
@@ -168,7 +218,19 @@ export default function HistoryPage() {
         delete next[clip.clip_id];
         return next;
       });
+      setHighlightsByClip((current) => {
+        const next = { ...current };
+        delete next[clip.clip_id];
+        return next;
+      });
+      setAiHighlightsByClip((current) => {
+        const next = { ...current };
+        delete next[clip.clip_id];
+        return next;
+      });
       if (transcriptClipId === clip.clip_id) setTranscriptClipId(null);
+      if (highlightClipId === clip.clip_id) setHighlightClipId(null);
+      if (aiHighlightClipId === clip.clip_id) setAiHighlightClipId(null);
     } catch (deleteError) {
       const message = deleteError instanceof Error ? deleteError.message : "Gagal menghapus clip.";
       setError(message.includes("Backend") ? message : `Gagal menghapus clip: ${message}`);
@@ -193,6 +255,10 @@ export default function HistoryPage() {
         setClips([]);
         setTranscripts({});
         setTranscriptClipId(null);
+        setHighlightsByClip({});
+        setHighlightClipId(null);
+        setAiHighlightsByClip({});
+        setAiHighlightClipId(null);
       }
     } catch (deleteError) {
       const message = deleteError instanceof Error ? deleteError.message : "Gagal menghapus video.";
@@ -280,6 +346,91 @@ export default function HistoryPage() {
       setError(message.includes("Backend") ? message : `Gagal mengambil transcript: ${message}`);
     } finally {
       setLoadingTranscriptId(null);
+    }
+  }
+
+  async function detectHighlights(clip: Clip) {
+    setDetectingHighlightId(clip.clip_id);
+    setHighlightClipId(clip.clip_id);
+    setError("");
+
+    try {
+      const payload = await apiRequest<HighlightList>(`/clips/${clip.clip_id}/detect-highlights`, {
+        method: "POST",
+      });
+      setHighlightsByClip((current) => ({ ...current, [clip.clip_id]: payload }));
+    } catch (highlightError) {
+      const message =
+        highlightError instanceof Error ? highlightError.message : "Gagal mendeteksi highlight.";
+      setError(message.includes("Backend") ? message : `Gagal mendeteksi highlight: ${message}`);
+    } finally {
+      setDetectingHighlightId(null);
+    }
+  }
+
+  async function viewHighlights(clip: Clip) {
+    if (highlightClipId === clip.clip_id && highlightsByClip[clip.clip_id]) {
+      setHighlightClipId(null);
+      return;
+    }
+
+    setLoadingHighlightId(clip.clip_id);
+    setError("");
+
+    try {
+      const payload = await apiRequest<HighlightList>(`/clips/${clip.clip_id}/highlights`);
+      setHighlightsByClip((current) => ({ ...current, [clip.clip_id]: payload }));
+      setHighlightClipId(clip.clip_id);
+    } catch (highlightError) {
+      const message =
+        highlightError instanceof Error ? highlightError.message : "Gagal mengambil highlight.";
+      setError(message.includes("Backend") ? message : `Gagal mengambil highlight: ${message}`);
+    } finally {
+      setLoadingHighlightId(null);
+    }
+  }
+
+
+  async function rankAiHighlights(clip: Clip) {
+    setRankingAiHighlightId(clip.clip_id);
+    setAiHighlightClipId(clip.clip_id);
+    setError("");
+
+    try {
+      const payload = await apiRequest<AIHighlightList>(`/clips/${clip.clip_id}/ai-rank-highlights`, {
+        method: "POST",
+      });
+      setAiHighlightsByClip((current) => ({ ...current, [clip.clip_id]: payload }));
+    } catch (aiError) {
+      const message =
+        aiError instanceof Error ? aiError.message : "Gagal menjalankan AI ranking highlight.";
+      setError(
+        message.includes("Backend") ? message : `Gagal menjalankan AI ranking highlight: ${message}`,
+      );
+    } finally {
+      setRankingAiHighlightId(null);
+    }
+  }
+
+  async function viewAiHighlights(clip: Clip) {
+    if (aiHighlightClipId === clip.clip_id && aiHighlightsByClip[clip.clip_id]) {
+      setAiHighlightClipId(null);
+      return;
+    }
+
+    setLoadingAiHighlightId(clip.clip_id);
+    setError("");
+
+    try {
+      const payload = await apiRequest<AIHighlightList>(`/clips/${clip.clip_id}/ai-highlights`);
+      setAiHighlightsByClip((current) => ({ ...current, [clip.clip_id]: payload }));
+      setAiHighlightClipId(clip.clip_id);
+    } catch (aiError) {
+      const message =
+        aiError instanceof Error ? aiError.message : "Gagal mengambil AI highlight.";
+      setError(message.includes("Backend") ? message : `Gagal mengambil AI highlight: ${message}`);
+    } finally {
+      setLoadingAiHighlightId(null);
     }
   }
 
@@ -378,6 +529,16 @@ export default function HistoryPage() {
               {clips.map((clip, index) => {
                 const transcript = transcripts[clip.clip_id];
                 const transcriptOpen = transcriptClipId === clip.clip_id;
+                const highlightPayload = highlightsByClip[clip.clip_id];
+                const highlightOpen = highlightClipId === clip.clip_id;
+                const highlightItems = [...(highlightPayload?.highlights ?? [])].sort(
+                  (left, right) => right.score - left.score,
+                );
+                const aiHighlightPayload = aiHighlightsByClip[clip.clip_id];
+                const aiHighlightOpen = aiHighlightClipId === clip.clip_id;
+                const aiHighlightItems = [...(aiHighlightPayload?.ai_highlights ?? [])].sort(
+                  (left, right) => right.score - left.score,
+                );
 
                 return (
                   <article
@@ -422,6 +583,46 @@ export default function HistoryPage() {
                       </button>
                       <button
                         type="button"
+                        disabled={detectingHighlightId !== null || loadingHighlightId !== null}
+                        onClick={() => detectHighlights(clip)}
+                      >
+                        {detectingHighlightId === clip.clip_id
+                          ? "Detecting..."
+                          : "Detect Highlights"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={detectingHighlightId !== null || loadingHighlightId !== null}
+                        onClick={() => viewHighlights(clip)}
+                      >
+                        {loadingHighlightId === clip.clip_id
+                          ? "Loading..."
+                          : highlightOpen
+                            ? "Hide Highlights"
+                            : "View Highlights"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={rankingAiHighlightId !== null || loadingAiHighlightId !== null}
+                        onClick={() => rankAiHighlights(clip)}
+                      >
+                        {rankingAiHighlightId === clip.clip_id
+                          ? "Ranking..."
+                          : "AI Rank Highlights"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={rankingAiHighlightId !== null || loadingAiHighlightId !== null}
+                        onClick={() => viewAiHighlights(clip)}
+                      >
+                        {loadingAiHighlightId === clip.clip_id
+                          ? "Loading..."
+                          : aiHighlightOpen
+                            ? "Hide AI Highlights"
+                            : "View AI Highlights"}
+                      </button>
+                      <button
+                        type="button"
                         disabled={generatingSubtitleId !== null || deletingClipId !== null}
                         onClick={() => openSubtitleForm(clip)}
                       >
@@ -433,7 +634,8 @@ export default function HistoryPage() {
                         disabled={
                           deletingClipId !== null ||
                           generatingSubtitleId !== null ||
-                          generatingTranscriptId !== null
+                          generatingTranscriptId !== null ||
+                          detectingHighlightId !== null
                         }
                         onClick={() => deleteClip(clip)}
                       >
@@ -453,6 +655,55 @@ export default function HistoryPage() {
                         {transcript.error_message && (
                           <p className="transcript-error">error: {transcript.error_message}</p>
                         )}
+                      </section>
+                    )}
+                    {highlightOpen && highlightPayload && (
+                      <section className="highlights-panel">
+                        <div className="transcript-meta">
+                          <span>transcript: {highlightPayload.transcript_id}</span>
+                          <span>candidates: {highlightItems.length}</span>
+                        </div>
+                        <div className="highlight-list">
+                          {highlightItems.map((highlight) => (
+                            <article className="highlight-item" key={highlight.highlight_id}>
+                              <div className="highlight-header">
+                                <strong>score: {highlight.score}</strong>
+                                <span>
+                                  {highlight.start_time} - {highlight.end_time}
+                                </span>
+                                <span>duration: {highlight.duration}</span>
+                              </div>
+                              <p className="highlight-reason">reason: {highlight.reason}</p>
+                              <p className="highlight-text">{highlight.text}</p>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                    {aiHighlightOpen && aiHighlightPayload && (
+                      <section className="highlights-panel">
+                        <div className="transcript-meta">
+                          <span>provider: {aiHighlightItems[0]?.provider ?? "-"}</span>
+                          <span>rankings: {aiHighlightItems.length}</span>
+                        </div>
+                        <div className="highlight-list">
+                          {aiHighlightItems.map((highlight) => (
+                            <article className="highlight-item" key={highlight.ai_ranking_id + highlight.highlight_id}>
+                              <div className="highlight-header">
+                                <strong>score: {highlight.score}</strong>
+                                <span>{highlight.title}</span>
+                                <span>
+                                  {highlight.start_time ?? "-"} - {highlight.end_time ?? "-"}
+                                </span>
+                              </div>
+                              <p className="highlight-reason">reason: {highlight.reason}</p>
+                              <p className="highlight-text">caption: {highlight.caption}</p>
+                              <p className="highlight-text">
+                                hashtags: {highlight.hashtags.length > 0 ? highlight.hashtags.join(", ") : "-"}
+                              </p>
+                            </article>
+                          ))}
+                        </div>
                       </section>
                     )}
                     {subtitleClipId === clip.clip_id && (
