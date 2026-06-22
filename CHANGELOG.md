@@ -4,6 +4,17 @@ Semua perubahan penting proyek ini dicatat di file ini.
 
 Format mengikuti pola sederhana: versi, tanggal, lalu daftar perubahan.
 
+## [0.13.0] - 2026-06-22
+
+### Added
+- Endpoint `POST /clips/{clip_id}/transcribe` untuk extract audio clip dengan FFmpeg lalu membuat transcript memakai arsitektur provider.
+- Tabel SQLite `transcripts` dengan kolom status, provider, transcript_text, segments_json, error_message, dan timestamp.
+- `DummyTranscriptionProvider` default melalui `TRANSCRIPTION_PROVIDER=dummy` agar transcript bisa dites tanpa biaya API.
+- Endpoint `GET /clips/{clip_id}/transcript` untuk mengambil transcript terbaru per clip.
+- Endpoint placeholder `POST /clips/{clip_id}/auto-subtitle-from-transcript` yang saat ini mengembalikan `501 TODO`.
+- Tombol `Generate Transcript` dan `View Transcript` di halaman `/history` beserta loading state dan tampilan hasil transcript.
+- Tes backend untuk alur transcript sukses, gagal, 404, transcript terbaru, dan pembuatan tabel.
+
 ## [0.12.1] - 2026-06-21
 
 ### Fixed

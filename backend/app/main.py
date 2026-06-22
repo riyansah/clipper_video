@@ -1,9 +1,10 @@
 import json
 import math
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, Protocol
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile, status
@@ -25,8 +26,11 @@ VERTICAL_WIDTH = 1080
 VERTICAL_HEIGHT = 1920
 OutputFormat = Literal["original", "vertical_9_16"]
 JobStatus = Literal["pending", "processing", "completed", "failed"]
+TranscriptStatus = Literal["pending", "processing", "completed", "failed"]
 VALID_OUTPUT_FORMATS = {"original", "vertical_9_16"}
 VALID_JOB_STATUSES = {"pending", "processing", "completed", "failed"}
+VALID_TRANSCRIPT_STATUSES = {"pending", "processing", "completed", "failed"}
+TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "dummy").strip().lower() or "dummy"
 VERTICAL_9_16_FILTER = (
     "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
     "crop=1080:1920,gblur=sigma=30[bg];"
@@ -88,6 +92,21 @@ class Job(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Transcript(Base):
+    __tablename__ = "transcripts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    transcript_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    clip_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    transcript_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    segments_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    error_message: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -120,6 +139,21 @@ def init_database() -> None:
             )
         if "subtitle_text" not in clip_columns:
             connection.execute(text("ALTER TABLE clips ADD COLUMN subtitle_text VARCHAR"))
+
+        transcript_table = connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='transcripts'")
+        ).fetchone()
+        if transcript_table is not None:
+            transcript_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(transcripts)"))
+            }
+            if "updated_at" not in transcript_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE transcripts ADD COLUMN updated_at DATETIME "
+                        "DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
 
 
 def get_db_session() -> Session:
@@ -206,6 +240,31 @@ def job_to_dict(job: Job, clips: list[Clip] | None = None) -> dict[str, object]:
     }
 
 
+def deserialize_segments(segments_json: str | None) -> list[dict[str, object]]:
+    if not segments_json:
+        return []
+    try:
+        payload = json.loads(segments_json)
+    except json.JSONDecodeError:
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def transcript_to_dict(transcript: Transcript) -> dict[str, object]:
+    return {
+        "id": transcript.id,
+        "transcript_id": transcript.transcript_id,
+        "clip_id": transcript.clip_id,
+        "transcript_text": transcript.transcript_text,
+        "segments_json": deserialize_segments(transcript.segments_json),
+        "provider": transcript.provider,
+        "status": transcript.status,
+        "error_message": transcript.error_message,
+        "created_at": transcript.created_at.isoformat(),
+        "updated_at": transcript.updated_at.isoformat(),
+    }
+
+
 def storage_path_from_database(file_path: str) -> Path:
     path = Path(file_path)
     if path.is_absolute():
@@ -236,6 +295,99 @@ def delete_storage_file(file_path: str, storage_dir: Path) -> bool:
     except FileNotFoundError:
         return False
     return True
+
+
+class TranscriptionProviderResult(BaseModel):
+    transcript_text: str
+    segments: list[dict[str, object]]
+
+
+class TranscriptionProvider(Protocol):
+    provider_name: str
+
+    def transcribe(self, audio_path: Path, clip: Clip) -> TranscriptionProviderResult:
+        ...
+
+
+class DummyTranscriptionProvider:
+    provider_name = "dummy"
+
+    def transcribe(self, audio_path: Path, clip: Clip) -> TranscriptionProviderResult:
+        transcript_text = "Ini adalah transcript dummy untuk clip ini."
+        return TranscriptionProviderResult(
+            transcript_text=transcript_text,
+            segments=[
+                {
+                    "id": 1,
+                    "start": 0,
+                    "end": round(float(clip.duration), 3),
+                    "text": transcript_text,
+                }
+            ],
+        )
+
+
+class LocalWhisperProvider:
+    provider_name = "local_whisper"
+
+    def transcribe(self, audio_path: Path, clip: Clip) -> TranscriptionProviderResult:
+        raise RuntimeError("Local whisper provider is not configured")
+
+
+class APITranscriptionProvider:
+    provider_name = "api"
+
+    def transcribe(self, audio_path: Path, clip: Clip) -> TranscriptionProviderResult:
+        raise RuntimeError("API transcription provider is not configured")
+
+
+def get_transcription_provider() -> TranscriptionProvider:
+    if TRANSCRIPTION_PROVIDER == "dummy":
+        return DummyTranscriptionProvider()
+    if TRANSCRIPTION_PROVIDER == "local_whisper":
+        return LocalWhisperProvider()
+    if TRANSCRIPTION_PROVIDER == "api":
+        return APITranscriptionProvider()
+    raise RuntimeError(f"Unsupported transcription provider: {TRANSCRIPTION_PROVIDER}")
+
+
+def extract_clip_audio(input_path: Path, audio_path: Path) -> None:
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        str(audio_path),
+    ]
+    subprocess.run(command, capture_output=True, text=True, check=True)
+    if not audio_path.is_file() or audio_path.stat().st_size == 0:
+        raise RuntimeError("FFmpeg did not create an audio file")
+
+
+def update_transcript_state(
+    session: Session,
+    transcript: Transcript,
+    status_value: TranscriptStatus | None = None,
+    transcript_text: str | None = None,
+    segments_json: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    if status_value is not None:
+        transcript.status = status_value
+    if transcript_text is not None:
+        transcript.transcript_text = transcript_text
+    if segments_json is not None:
+        transcript.segments_json = segments_json
+    transcript.error_message = error_message
+    transcript.updated_at = utc_now()
+    session.commit()
 
 
 app.add_middleware(
@@ -944,6 +1096,160 @@ def auto_split_video(
     }
 
 
+class TranscriptResponse(BaseModel):
+    id: int
+    transcript_id: str
+    clip_id: str
+    transcript_text: str | None
+    segments_json: list[dict[str, object]]
+    provider: str
+    status: str
+    error_message: str | None
+    created_at: str
+    updated_at: str
+
+
+def get_clip_or_404(session: Session, clip_id: str) -> Clip:
+    try:
+        clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read clip metadata",
+        ) from exc
+    if clip is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clip not found",
+        )
+    return clip
+
+
+def get_latest_transcript(session: Session, clip_id: str) -> Transcript | None:
+    return session.scalar(
+        select(Transcript)
+        .where(Transcript.clip_id == clip_id)
+        .order_by(Transcript.created_at.desc(), Transcript.id.desc())
+    )
+
+
+def transcribe_error_message(exc: Exception) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "FFmpeg executable was not found"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "FFmpeg failed to extract clip audio"
+    return str(exc)
+
+
+@app.post("/clips/{clip_id}/transcribe", tags=["clips"], response_model=TranscriptResponse)
+def transcribe_clip(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, object]:
+    source_clip = get_clip_or_404(session, clip_id)
+
+    try:
+        input_path = validated_storage_path(source_clip.file_path, OUTPUT_DIR)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clip file not found",
+        ) from exc
+    if not input_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Clip file not found",
+        )
+
+    provider = get_transcription_provider()
+    transcript = Transcript(
+        transcript_id=str(uuid4()),
+        clip_id=source_clip.clip_id,
+        provider=provider.provider_name,
+        status="pending",
+    )
+    try:
+        session.add(transcript)
+        session.commit()
+        session.refresh(transcript)
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save transcript metadata",
+        ) from exc
+
+    audio_dir = OUTPUT_DIR / "audio"
+    audio_path = audio_dir / f"{transcript.transcript_id}.wav"
+
+    try:
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        update_transcript_state(session, transcript, status_value="processing")
+        extract_clip_audio(input_path, audio_path)
+        result = provider.transcribe(audio_path, source_clip)
+        update_transcript_state(
+            session,
+            transcript,
+            status_value="completed",
+            transcript_text=result.transcript_text,
+            segments_json=json.dumps(result.segments, ensure_ascii=False),
+            error_message=None,
+        )
+    except SQLAlchemyError as exc:
+        session.rollback()
+        audio_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update transcript metadata",
+        ) from exc
+    except Exception as exc:
+        session.rollback()
+        transcript = session.scalar(select(Transcript).where(Transcript.id == transcript.id))
+        if transcript is not None:
+            update_transcript_state(
+                session,
+                transcript,
+                status_value="failed",
+                error_message=transcribe_error_message(exc),
+            )
+            session.refresh(transcript)
+        audio_path.unlink(missing_ok=True)
+        if transcript is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=transcribe_error_message(exc),
+            ) from exc
+        return transcript_to_dict(transcript)
+
+    audio_path.unlink(missing_ok=True)
+    session.refresh(transcript)
+    return transcript_to_dict(transcript)
+
+
+@app.get("/clips/{clip_id}/transcript", tags=["clips"], response_model=TranscriptResponse)
+def get_clip_transcript(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, object]:
+    get_clip_or_404(session, clip_id)
+    transcript = get_latest_transcript(session, clip_id)
+    if transcript is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transcript not found",
+        )
+    return transcript_to_dict(transcript)
+
+
+@app.post("/clips/{clip_id}/auto-subtitle-from-transcript", tags=["clips"])
+def auto_subtitle_from_transcript(
+    clip_id: str, session: Session = Depends(get_db_session)
+) -> dict[str, str]:
+    get_clip_or_404(session, clip_id)
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="TODO: auto subtitle from transcript is not implemented yet",
+    )
+
+
 def parse_subtitle_timestamp(value: str) -> float:
     parts = value.split(":")
     if len(parts) != 3:
@@ -1023,19 +1329,7 @@ def add_clip_subtitle(
     request: SubtitleRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    try:
-        source_clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
-    except SQLAlchemyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to read clip metadata",
-        ) from exc
-
-    if source_clip is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Clip not found",
-        )
+    source_clip = get_clip_or_404(session, clip_id)
 
     try:
         input_path = validated_storage_path(source_clip.file_path, OUTPUT_DIR)
@@ -1143,36 +1437,19 @@ def add_clip_subtitle(
 
     return clip_to_dict(new_clip)
 
+
 @app.get("/clips/{clip_id}", tags=["clips"])
 def get_clip(
     clip_id: str, session: Session = Depends(get_db_session)
 ) -> dict[str, int | float | str | None]:
-    clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
-    if clip is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Clip not found",
-        )
-    return clip_to_dict(clip)
+    return clip_to_dict(get_clip_or_404(session, clip_id))
 
 
 @app.delete("/clips/{clip_id}", tags=["clips"])
 def delete_clip(
     clip_id: str, session: Session = Depends(get_db_session)
 ) -> dict[str, str | bool]:
-    try:
-        clip = session.scalar(select(Clip).where(Clip.clip_id == clip_id))
-    except SQLAlchemyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to read clip metadata",
-        ) from exc
-
-    if clip is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Clip not found",
-        )
+    clip = get_clip_or_404(session, clip_id)
 
     try:
         file_deleted = delete_storage_file(clip.file_path, OUTPUT_DIR)

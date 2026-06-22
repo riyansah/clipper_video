@@ -33,6 +33,19 @@ type Clip = {
   created_at: string;
 };
 
+type Transcript = {
+  id: number;
+  transcript_id: string;
+  clip_id: string;
+  transcript_text: string | null;
+  segments_json: Array<Record<string, unknown>>;
+  provider: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
 
@@ -79,8 +92,6 @@ function formatSubtitleEnd(duration: number) {
   return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
 }
 
-
-
 export default function HistoryPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [clips, setClips] = useState<Clip[]>([]);
@@ -94,6 +105,10 @@ export default function HistoryPage() {
   const [subtitleStartTime, setSubtitleStartTime] = useState("00:00:00");
   const [subtitleEndTime, setSubtitleEndTime] = useState("00:00:01");
   const [generatingSubtitleId, setGeneratingSubtitleId] = useState<string | null>(null);
+  const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
+  const [transcriptClipId, setTranscriptClipId] = useState<string | null>(null);
+  const [generatingTranscriptId, setGeneratingTranscriptId] = useState<string | null>(null);
+  const [loadingTranscriptId, setLoadingTranscriptId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -124,6 +139,8 @@ export default function HistoryPage() {
   async function loadClips(video: VideoItem) {
     setSelectedVideo(video);
     setClips([]);
+    setTranscripts({});
+    setTranscriptClipId(null);
     setLoadingClips(true);
     setError("");
 
@@ -145,9 +162,13 @@ export default function HistoryPage() {
     setError("");
     try {
       await apiRequest(`/clips/${clip.clip_id}`, { method: "DELETE" });
-      setClips((currentClips) =>
-        currentClips.filter((item) => item.clip_id !== clip.clip_id),
-      );
+      setClips((currentClips) => currentClips.filter((item) => item.clip_id !== clip.clip_id));
+      setTranscripts((current) => {
+        const next = { ...current };
+        delete next[clip.clip_id];
+        return next;
+      });
+      if (transcriptClipId === clip.clip_id) setTranscriptClipId(null);
     } catch (deleteError) {
       const message = deleteError instanceof Error ? deleteError.message : "Gagal menghapus clip.";
       setError(message.includes("Backend") ? message : `Gagal menghapus clip: ${message}`);
@@ -166,12 +187,12 @@ export default function HistoryPage() {
     setError("");
     try {
       await apiRequest(`/videos/${video.video_id}`, { method: "DELETE" });
-      setVideos((currentVideos) =>
-        currentVideos.filter((item) => item.video_id !== video.video_id),
-      );
+      setVideos((currentVideos) => currentVideos.filter((item) => item.video_id !== video.video_id));
       if (selectedVideo?.video_id === video.video_id) {
         setSelectedVideo(null);
         setClips([]);
+        setTranscripts({});
+        setTranscriptClipId(null);
       }
     } catch (deleteError) {
       const message = deleteError instanceof Error ? deleteError.message : "Gagal menghapus video.";
@@ -221,6 +242,46 @@ export default function HistoryPage() {
     }
   }
 
+  async function generateTranscript(clip: Clip) {
+    setGeneratingTranscriptId(clip.clip_id);
+    setTranscriptClipId(clip.clip_id);
+    setError("");
+
+    try {
+      const transcript = await apiRequest<Transcript>(`/clips/${clip.clip_id}/transcribe`, {
+        method: "POST",
+      });
+      setTranscripts((current) => ({ ...current, [clip.clip_id]: transcript }));
+    } catch (transcriptError) {
+      const message =
+        transcriptError instanceof Error ? transcriptError.message : "Gagal membuat transcript.";
+      setError(message.includes("Backend") ? message : `Gagal membuat transcript: ${message}`);
+    } finally {
+      setGeneratingTranscriptId(null);
+    }
+  }
+
+  async function viewTranscript(clip: Clip) {
+    if (transcriptClipId === clip.clip_id && transcripts[clip.clip_id]) {
+      setTranscriptClipId(null);
+      return;
+    }
+
+    setLoadingTranscriptId(clip.clip_id);
+    setError("");
+
+    try {
+      const transcript = await apiRequest<Transcript>(`/clips/${clip.clip_id}/transcript`);
+      setTranscripts((current) => ({ ...current, [clip.clip_id]: transcript }));
+      setTranscriptClipId(clip.clip_id);
+    } catch (transcriptError) {
+      const message =
+        transcriptError instanceof Error ? transcriptError.message : "Gagal mengambil transcript.";
+      setError(message.includes("Backend") ? message : `Gagal mengambil transcript: ${message}`);
+    } finally {
+      setLoadingTranscriptId(null);
+    }
+  }
 
   return (
     <main className="app-shell history-shell">
@@ -314,87 +375,125 @@ export default function HistoryPage() {
             <div className="empty-state">Video ini belum memiliki clip.</div>
           ) : (
             <div className="clip-grid history-clip-grid">
-              {clips.map((clip, index) => (
-                <article
-                  className={`clip-card ${clip.output_format === "vertical_9_16" ? "vertical" : ""}`}
-                  key={clip.clip_id}
-                >
-                  <div className="clip-index">{String(index + 1).padStart(2, "0")}</div>
-                  {clip.has_subtitle && <span className="subtitle-badge">Subtitled</span>}
-                  <div className="video-frame">
-                    <video src={`${API_URL}${clip.download_url}`} controls preload="metadata" />
-                  </div>
-                  <div className="clip-meta">
-                    <div>
-                      <strong>{clip.clip_id}</strong>
-                      <span>duration: {clip.duration}</span>
-                      <span>output_format: {clip.output_format}</span>
-                    </div>
-                  </div>
-                  <div className="clip-actions">
-                    <a href={`${API_URL}${clip.download_url}`} download>
-                      Download
-                    </a>
-                    <button
-                      type="button"
-                      disabled={generatingSubtitleId !== null || deletingClipId !== null}
-                      onClick={() => openSubtitleForm(clip)}
-                    >
-                      {subtitleClipId === clip.clip_id ? "Close" : "Add Subtitle"}
-                    </button>
-                    <button
-                      className="danger-button"
-                      type="button"
-                      disabled={deletingClipId !== null || generatingSubtitleId !== null}
-                      onClick={() => deleteClip(clip)}
-                    >
-                      {deletingClipId === clip.clip_id ? "Deleting..." : "Delete"}
-                    </button>
-                  </div>
-                  {subtitleClipId === clip.clip_id && (
-                    <form
-                      className="subtitle-form"
-                      onSubmit={(event) => generateSubtitle(event, clip)}
-                    >
-                      <label>
-                        Subtitle
-                        <textarea
-                          value={subtitleText}
-                          maxLength={500}
-                          required
-                          onChange={(event) => setSubtitleText(event.target.value)}
-                        />
-                      </label>
-                      <div className="subtitle-time-grid">
-                        <label>
-                          Start time
-                          <input
-                            type="text"
-                            value={subtitleStartTime}
-                            required
-                            onChange={(event) => setSubtitleStartTime(event.target.value)}
-                          />
-                        </label>
-                        <label>
-                          End time
-                          <input
-                            type="text"
-                            value={subtitleEndTime}
-                            required
-                            onChange={(event) => setSubtitleEndTime(event.target.value)}
-                          />
-                        </label>
-                      </div>
-                      <button type="submit" disabled={generatingSubtitleId !== null}>
-                        {generatingSubtitleId === clip.clip_id
-                          ? "Generating..."
-                          : "Generate Subtitle"}
-                      </button>
-                    </form>
-                  )}
+              {clips.map((clip, index) => {
+                const transcript = transcripts[clip.clip_id];
+                const transcriptOpen = transcriptClipId === clip.clip_id;
 
-                </article>
-              ))}
+                return (
+                  <article
+                    className={`clip-card ${clip.output_format === "vertical_9_16" ? "vertical" : ""}`}
+                    key={clip.clip_id}
+                  >
+                    <div className="clip-index">{String(index + 1).padStart(2, "0")}</div>
+                    {clip.has_subtitle && <span className="subtitle-badge">Subtitled</span>}
+                    <div className="video-frame">
+                      <video src={`${API_URL}${clip.download_url}`} controls preload="metadata" />
+                    </div>
+                    <div className="clip-meta">
+                      <div>
+                        <strong>{clip.clip_id}</strong>
+                        <span>duration: {clip.duration}</span>
+                        <span>output_format: {clip.output_format}</span>
+                      </div>
+                    </div>
+                    <div className="clip-actions">
+                      <a href={`${API_URL}${clip.download_url}`} download>
+                        Download
+                      </a>
+                      <button
+                        type="button"
+                        disabled={generatingTranscriptId !== null || loadingTranscriptId !== null}
+                        onClick={() => generateTranscript(clip)}
+                      >
+                        {generatingTranscriptId === clip.clip_id
+                          ? "Generating..."
+                          : "Generate Transcript"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={generatingTranscriptId !== null || loadingTranscriptId !== null}
+                        onClick={() => viewTranscript(clip)}
+                      >
+                        {loadingTranscriptId === clip.clip_id
+                          ? "Loading..."
+                          : transcriptOpen
+                            ? "Hide Transcript"
+                            : "View Transcript"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={generatingSubtitleId !== null || deletingClipId !== null}
+                        onClick={() => openSubtitleForm(clip)}
+                      >
+                        {subtitleClipId === clip.clip_id ? "Close" : "Add Subtitle"}
+                      </button>
+                      <button
+                        className="danger-button"
+                        type="button"
+                        disabled={
+                          deletingClipId !== null ||
+                          generatingSubtitleId !== null ||
+                          generatingTranscriptId !== null
+                        }
+                        onClick={() => deleteClip(clip)}
+                      >
+                        {deletingClipId === clip.clip_id ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
+                    {transcriptOpen && transcript && (
+                      <section className="transcript-panel">
+                        <div className="transcript-meta">
+                          <span>provider: {transcript.provider}</span>
+                          <span>status: {transcript.status}</span>
+                          <span>updated: {formatDate(transcript.updated_at)}</span>
+                        </div>
+                        <p className="transcript-text">
+                          {transcript.transcript_text ?? "Transcript belum tersedia."}
+                        </p>
+                        {transcript.error_message && (
+                          <p className="transcript-error">error: {transcript.error_message}</p>
+                        )}
+                      </section>
+                    )}
+                    {subtitleClipId === clip.clip_id && (
+                      <form className="subtitle-form" onSubmit={(event) => generateSubtitle(event, clip)}>
+                        <label>
+                          Subtitle
+                          <textarea
+                            value={subtitleText}
+                            maxLength={500}
+                            required
+                            onChange={(event) => setSubtitleText(event.target.value)}
+                          />
+                        </label>
+                        <div className="subtitle-time-grid">
+                          <label>
+                            Start time
+                            <input
+                              type="text"
+                              value={subtitleStartTime}
+                              required
+                              onChange={(event) => setSubtitleStartTime(event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            End time
+                            <input
+                              type="text"
+                              value={subtitleEndTime}
+                              required
+                              onChange={(event) => setSubtitleEndTime(event.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <button type="submit" disabled={generatingSubtitleId !== null}>
+                          {generatingSubtitleId === clip.clip_id ? "Generating..." : "Generate Subtitle"}
+                        </button>
+                      </form>
+                    )}
+                  </article>
+                );
+              })}
             </div>
           )}
         </article>

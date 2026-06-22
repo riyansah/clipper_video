@@ -125,6 +125,36 @@ a:active {
   padding: 10px;
 }
 
+.transcript-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ink);
+}
+
+.transcript-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.transcript-text,
+.transcript-error {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.transcript-error {
+  color: #a13c3c;
+}
+
 
 .footer {
   position: relative;
